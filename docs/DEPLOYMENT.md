@@ -1,32 +1,98 @@
 # Azure deployment handoff
 
-Cloud deployment is intentionally deferred until Azure CLI access, subscription/resource-group scope, administrator identity choice, domains, and production owners are supplied. Homix Portal users do not need an eSign identity-provider registration because they enter through delegated Portal sessions.
+The development environment is deployed in the `Azure subscription free` subscription under resource group `rg-kevvesign-dev`.
 
-## Required inputs
+- Public application: `https://ca-web-kevvesign-dev.whitepond-3b391332.eastus2.azurecontainerapps.io`
+- Web, API, jobs, storage, messaging, email, Key Vault, and registry: East US 2
+- Azure SQL: Central US because this subscription currently restricts SQL creation in East US and East US 2
+- Staff entry: delegated Homix Portal session; ordinary Portal users do not create an eSign login
+- Recipient entry: one-time signing link; no recipient account
 
-- Subscription and resource group for development/staging/production.
-- Primary region and recovery decision.
-- Entra SQL administrator group object ID. Choose Google Workspace (preferred) or Entra for the small standalone eSign administrator group.
-- Container registry/image destinations.
-- Staff console/API hostnames and Communication Services sending domain.
-- Exact HTTPS Portal return URLs for each source project and environment.
-- Named product, technical, security/privacy, operations, HR-policy, and NY/NJ/CA broker/counsel owners.
-- Approved retention matrix and pilot documents.
+This is a development environment, not a legal or production release. It still needs a custom domain, verified email domain, final retention policy, production network isolation, monitoring/alerts, backup/recovery review, and NY/NJ/CA counsel/broker acceptance before real transactions or employee records are used.
 
-## Deployment sequence
+## Deployed resources
 
-1. Build and scan the three container images.
-2. Run `az deployment group what-if` against `infra/main.bicep` with environment-specific parameters.
-3. Review resource tiers, public-network flags, role assignments, budgets, and diagnostic settings. Private endpoints/VNet restrictions are a production release gate.
-4. Deploy infrastructure and run SQL migrations with an Entra administrator.
-5. Configure custom domains, SPF/DKIM, the selected administrator redirect URIs, registered Portal return URLs, and Key Vault secret values.
-6. Deploy applications with no customer data and run the synthetic smoke journey.
-7. Verify evidence hashes, Key Vault signature, Blob immutability, SQL Ledger digest, alerts, email status, and rollback.
+- Container Apps: public Nginx/React Web and internal-only Fastify API with ClamAV sidecar
+- Container Apps Job: event-driven PDF finalizer using the `pdf-finalize` Service Bus queue
+- Azure SQL Database: Entra-only authentication, ledger audit table, separate API and finalizer managed identities
+- Storage: OAuth-only access, no public blobs, versioning/change feed, and delete retention
+- Key Vault: RBAC, purge protection, RSA manifest signing key, application secrets
+- Azure Container Registry: Basic, local admin disabled, managed-identity image pulls
+- Azure Communication Services Email: Azure-managed development sender
+- Log Analytics and Application Insights
 
-## Integration credential cutover
+Current image references are recorded in `infra/parameters.dev.json`. The Bicep template remains the source of truth for resource configuration; deployment-only credentials remain in Key Vault and are never stored in a parameters file.
 
-After staging is healthy, issue separate application credentials for each source project and environment. Store each value in that project's Azure Key Vault or equivalent backend secret store, register exact environment-specific return URLs, grant only required scopes, exercise rotation/revocation, and confirm the old value and associated delegated sessions immediately fail. Never reuse one credential across development, staging, and production or expose it to browser code.
+## Repeatable deployment
 
-REST polling is the supported integration mode for the first staging cutover. Do not enable production webhook subscriptions until delivery persistence, retry/dead-letter behavior, replay controls, and a reference signature-verifying consumer pass Azure integration tests.
+Run validation before changing Azure:
 
-Never place a production secret in a parameters JSON file, command history, source control, or CI log.
+```bash
+pnpm verify
+az bicep build --file infra/main.bicep --stdout >/dev/null
+az deployment group validate \
+  --resource-group rg-kevvesign-dev \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.dev.json \
+  --parameters bootstrapSessionSecret="$KEVVESIGN_SESSION_SECRET"
+```
+
+For an existing environment, load the current session secret without printing it, run `what-if`, then deploy:
+
+```bash
+KEVVESIGN_SESSION_SECRET=$(az keyvault secret show \
+  --vault-name kv-kevvesign-dev-lxgas2 \
+  --name session-secret \
+  --query value \
+  --output tsv)
+
+az deployment group what-if \
+  --resource-group rg-kevvesign-dev \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.dev.json \
+  --parameters bootstrapSessionSecret="$KEVVESIGN_SESSION_SECRET"
+
+az deployment group create \
+  --name kevvesign-dev-release \
+  --resource-group rg-kevvesign-dev \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.dev.json \
+  --parameters bootstrapSessionSecret="$KEVVESIGN_SESSION_SECRET"
+
+unset KEVVESIGN_SESSION_SECRET
+```
+
+For a first deployment, generate a cryptographically random value instead and immediately store it in the environment's Key Vault. Never place it in source control, parameters JSON, shell history, CI output, or browser code.
+
+## SQL bootstrap
+
+`pnpm --filter @esign/infrastructure bootstrap:azure-sql` installs the schema, reapplies the idempotent least-privilege grants, reconciles managed-identity users by client ID, seeds the workspace administrator, and optionally seeds the first Portal application client. Run it with a short-lived Azure SQL access token and a temporary firewall rule limited to the operator's exact IP; remove that rule immediately afterward.
+
+The API and finalizer use `DefaultAzureCredential` through the `azure-active-directory-default` driver mode. Their contained database users belong only to `esign_app_role`. The role can read/write application state and append audit events, but cannot delete ledger audit rows or control the schema.
+
+## Portal credential cutover
+
+The Azure smoke credential is stored only in `kv-kevvesign-dev-lxgas2` as `portal-smoke-client-credential`. It is for deployment verification, not Homix Portal production use.
+
+For Homix Portal integration:
+
+1. Register the exact Homix Portal HTTPS return URL.
+2. Issue a dedicated environment-specific application credential with only the required scopes.
+3. Store it in the Homix Portal backend secret store; never send it to browser JavaScript.
+4. Have the Portal backend call `POST /v1/portal-sessions`, then redirect the staff browser to the returned fragment-based `launchUrl`.
+5. Verify rotation and revocation, then revoke the deployment smoke client.
+
+REST polling is the supported integration mode for the first staging cutover. Do not enable production webhooks until persistence, retry/dead-letter behavior, replay controls, and a signature-verifying consumer pass Azure integration tests.
+
+## Release checks completed
+
+- Public `/health`: 200
+- Static application root: 200
+- Unauthenticated `/v1/me`: 401
+- Portal launch/exchange/session/dashboard: 201/200/200/200
+- One-time launch ticket replay: 410
+- Portal logout and post-logout access: 200/401
+- API and ClamAV containers: ready with zero restarts after final rollout
+- SQL temporary operator firewall rule: removed
+
+The synthetic Portal session was logged out after verification. No licensed real-estate form, customer document, recipient email, or employee record was used.

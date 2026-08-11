@@ -11,8 +11,24 @@ param environment string
 @description('Primary US Azure region selected during deployment review.')
 param location string = resourceGroup().location
 
+@description('Azure SQL region; may differ in dev when subscription capacity restricts the primary region.')
+param sqlLocation string = location
+
 @description('Object ID of the Entra group that administers Azure SQL.')
 param sqlEntraAdminObjectId string
+
+@description('Display name or UPN of the Entra principal that administers Azure SQL.')
+param sqlEntraAdminLogin string = 'esign-sql-admins'
+
+@allowed(['Group', 'User', 'ServicePrincipal'])
+@description('Entra principal type used as the Azure SQL administrator.')
+param sqlEntraAdminPrincipalType string = 'Group'
+
+@description('Entra object ID for the deployment operator who manages dev secrets and signing keys.')
+param operatorObjectId string = sqlEntraAdminObjectId
+
+@allowed(['Group', 'User', 'ServicePrincipal'])
+param operatorPrincipalType string = sqlEntraAdminPrincipalType
 
 @description('Tenant ID for the Entra SQL administrator.')
 param tenantId string = tenant().tenantId
@@ -27,10 +43,8 @@ param publicBaseUrl string
 
 param entraTenantId string
 param entraClientId string
-param acsEmailSender string
-
-@secure()
-param acsEmailConnectionString string
+@description('Optional sender override. Leave blank to use the Azure-managed email domain sender.')
+param acsEmailSender string = ''
 
 @secure()
 @description('Initial local application session secret; production app reads the rotated value from Key Vault.')
@@ -78,6 +92,24 @@ resource finalizerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@202
   name: 'id-pdf-${stem}'
   location: location
   tags: tags
+}
+
+resource registryIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-acr-${stem}'
+  location: location
+  tags: tags
+}
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: take('acr${compact}${uniqueString(subscription().id, resourceGroup().id)}', 50)
+  location: location
+  tags: tags
+  sku: { name: 'Basic' }
+  properties: {
+    adminUserEnabled: false
+    dataEndpointEnabled: false
+    publicNetworkAccess: 'Enabled'
+  }
 }
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
@@ -181,6 +213,40 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
+resource emailService 'Microsoft.Communication/emailServices@2025-09-01' = {
+  name: take('email-${stem}-${uniqueString(resourceGroup().id)}', 63)
+  location: 'global'
+  tags: tags
+  properties: { dataLocation: 'United States' }
+}
+
+resource emailDomain 'Microsoft.Communication/emailServices/domains@2025-09-01' = {
+  parent: emailService
+  name: 'AzureManagedDomain'
+  location: 'global'
+  tags: tags
+  properties: {
+    domainManagement: 'AzureManaged'
+    userEngagementTracking: 'Disabled'
+  }
+}
+
+resource communicationService 'Microsoft.Communication/communicationServices@2025-09-01' = {
+  name: take('acs-${stem}-${uniqueString(resourceGroup().id)}', 63)
+  location: 'global'
+  tags: tags
+  properties: {
+    dataLocation: 'United States'
+    disableLocalAuth: false
+    linkedDomains: [emailDomain.id]
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+var resolvedAcsEmailSender = empty(acsEmailSender)
+  ? 'DoNotReply@${emailDomain.properties.mailFromSenderDomain}'
+  : acsEmailSender
+
 resource manifestKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = {
   parent: keyVault
   name: 'esign-manifest'
@@ -205,16 +271,22 @@ resource sessionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   properties: { value: bootstrapSessionSecret }
 }
 
+resource acsEmailSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'acs-email-connection-string'
+  properties: { value: communicationService.listKeys().primaryConnectionString }
+}
+
 resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
-  name: 'sql-${stem}-${take(uniqueString(resourceGroup().id), 6)}'
-  location: location
+  name: 'sql-${stem}-${take(uniqueString(resourceGroup().id, sqlLocation), 6)}'
+  location: sqlLocation
   tags: tags
   properties: {
     administrators: {
       administratorType: 'ActiveDirectory'
       azureADOnlyAuthentication: true
-      login: 'esign-sql-admins'
-      principalType: 'Group'
+      login: sqlEntraAdminLogin
+      principalType: sqlEntraAdminPrincipalType
       sid: sqlEntraAdminObjectId
       tenantId: tenantId
     }
@@ -225,10 +297,19 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   }
 }
 
+resource allowAzureServices 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
+  parent: sqlServer
+  name: 'AllowAllWindowsAzureIps'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
 resource database 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   parent: sqlServer
   name: 'esign'
-  location: location
+  location: sqlLocation
   tags: tags
   sku: environment == 'prod' ? {
     name: 'GP_S_Gen5_2'
@@ -240,14 +321,13 @@ resource database 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
     tier: 'Basic'
     capacity: 5
   }
-  properties: {
-    autoPauseDelay: environment == 'prod' ? -1 : 60
+  properties: union({
     requestedBackupStorageRedundancy: environment == 'prod' ? 'Geo' : 'Local'
     collation: 'SQL_Latin1_General_CP1_CI_AS'
     isLedgerOn: true
     readScale: 'Disabled'
     zoneRedundant: false
-  }
+  }, environment == 'prod' ? { autoPauseDelay: -1 } : {})
 }
 
 resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -272,7 +352,13 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'ca-api-${stem}'
   location: location
   tags: tags
-  identity: { type: 'UserAssigned', userAssignedIdentities: { '${workloadIdentity.id}': {} } }
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${workloadIdentity.id}': {}
+      '${registryIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: containerEnvironment.id
     configuration: {
@@ -285,11 +371,13 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         }
         {
           name: 'acs-email'
-          value: acsEmailConnectionString
+          keyVaultUrl: acsEmailSecret.properties.secretUriWithVersion
+          identity: workloadIdentity.id
         }
       ]
+      registries: [{ server: registry.properties.loginServer, identity: registryIdentity.id }]
       ingress: {
-        external: true
+        external: false
         targetPort: 4100
         transport: 'http'
         allowInsecure: false
@@ -316,8 +404,8 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ENTRA_TENANT_ID', value: entraTenantId }
             { name: 'ENTRA_CLIENT_ID', value: entraClientId }
             { name: 'ACS_EMAIL_CONNECTION_STRING', secretRef: 'acs-email' }
-            { name: 'ACS_EMAIL_SENDER', value: acsEmailSender }
-            { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Managed Identity;User Id=${workloadIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }
+            { name: 'ACS_EMAIL_SENDER', value: resolvedAcsEmailSender }
+            { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Integrated;Client Id=${workloadIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }
             { name: 'AZURE_STORAGE_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
             { name: 'AZURE_KEY_VAULT_URL', value: keyVault.properties.vaultUri }
             { name: 'CLAMAV_HOST', value: '127.0.0.1' }
@@ -334,16 +422,19 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
       scale: { minReplicas: environment == 'prod' ? 1 : 0, maxReplicas: 5 }
     }
   }
+  dependsOn: [registryPull, vaultSecretsUser]
 }
 
 resource web 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'ca-web-${stem}'
   location: location
   tags: tags
+  identity: { type: 'UserAssigned', userAssignedIdentities: { '${registryIdentity.id}': {} } }
   properties: {
     managedEnvironmentId: containerEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [{ server: registry.properties.loginServer, identity: registryIdentity.id }]
       ingress: { external: true, targetPort: 8080, transport: 'http', allowInsecure: false }
     }
     template: {
@@ -358,16 +449,24 @@ resource web 'Microsoft.App/containerApps@2024-03-01' = {
       scale: { minReplicas: 0, maxReplicas: 3 }
     }
   }
+  dependsOn: [registryPull]
 }
 
-resource pdfJob 'Microsoft.App/jobs@2024-03-01' = {
+resource pdfJob 'Microsoft.App/jobs@2025-07-01' = {
   name: 'job-pdf-${stem}'
   location: location
   tags: tags
-  identity: { type: 'UserAssigned', userAssignedIdentities: { '${finalizerIdentity.id}': {} } }
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${finalizerIdentity.id}': {}
+      '${registryIdentity.id}': {}
+    }
+  }
   properties: {
     environmentId: containerEnvironment.id
     configuration: {
+      registries: [{ server: registry.properties.loginServer, identity: registryIdentity.id }]
       triggerType: 'Event'
       replicaTimeout: 900
       replicaRetryLimit: 2
@@ -378,7 +477,18 @@ resource pdfJob 'Microsoft.App/jobs@2024-03-01' = {
           minExecutions: 0
           maxExecutions: 5
           pollingInterval: 30
-          rules: []
+          rules: [
+            {
+              name: 'pdf-finalize'
+              type: 'azure-servicebus'
+              metadata: {
+                namespace: serviceBus.name
+                queueName: finalizeQueue.name
+                messageCount: '1'
+              }
+              identity: finalizerIdentity.id
+            }
+          ]
         }
       }
     }
@@ -389,7 +499,7 @@ resource pdfJob 'Microsoft.App/jobs@2024-03-01' = {
           image: pdfFinalizerImage
           env: [
             { name: 'NODE_ENV', value: 'production' }
-            { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Managed Identity;User Id=${finalizerIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }
+            { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Integrated;Client Id=${finalizerIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }
             { name: 'AZURE_STORAGE_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
             { name: 'AZURE_KEY_VAULT_URL', value: keyVault.properties.vaultUri }
           ]
@@ -397,6 +507,17 @@ resource pdfJob 'Microsoft.App/jobs@2024-03-01' = {
         }
       ]
     }
+  }
+  dependsOn: [registryPull, finalizerVaultCryptoUser, serviceBusReceiver]
+}
+
+resource registryPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, registryIdentity.id, 'acr-pull')
+  scope: registry
+  properties: {
+    principalId: registryIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
   }
 }
 
@@ -421,6 +542,16 @@ resource finalizerBlobContributor 'Microsoft.Authorization/roleAssignments@2022-
 }
 
 resource vaultCryptoUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, workloadIdentity.id, 'crypto-user')
+  scope: keyVault
+  properties: {
+    principalId: workloadIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '12338af0-0e69-4776-bea7-57ae8d297424')
+  }
+}
+
+resource finalizerVaultCryptoUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, finalizerIdentity.id, 'crypto-user')
   scope: keyVault
   properties: {
@@ -440,6 +571,16 @@ resource vaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
+resource vaultOperator 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, operatorObjectId, 'vault-administrator')
+  scope: keyVault
+  properties: {
+    principalId: operatorObjectId
+    principalType: operatorPrincipalType
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '00482a5a-887f-4fb3-b363-3b7fe8e74483')
+  }
+}
+
 resource serviceBusSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(serviceBus.id, workloadIdentity.id, 'sender')
   scope: serviceBus
@@ -450,9 +591,24 @@ resource serviceBusSender 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
+resource serviceBusReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(serviceBus.id, finalizerIdentity.id, 'receiver')
+  scope: serviceBus
+  properties: {
+    principalId: finalizerIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '090c5cfd-751d-490a-894a-3ce6f1109419')
+  }
+}
+
 output apiFqdn string = api.properties.configuration.ingress.fqdn
 output webFqdn string = web.properties.configuration.ingress.fqdn
 output storageAccount string = storage.name
 output sqlServerFqdn string = sqlServer.properties.fullyQualifiedDomainName
 output keyVaultUri string = keyVault.properties.vaultUri
 output serviceBusNamespace string = serviceBus.name
+output containerRegistry string = registry.name
+output containerRegistryServer string = registry.properties.loginServer
+output acsEmailSender string = resolvedAcsEmailSender
+output workloadIdentityName string = workloadIdentity.name
+output finalizerIdentityName string = finalizerIdentity.name
