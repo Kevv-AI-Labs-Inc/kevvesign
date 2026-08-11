@@ -3,12 +3,12 @@ import type {
   ApplicationClient,
   CreateApplicationClientInput,
   CreateEnvelopeInput,
-  CreatePortalSessionInput,
+  CreateIntegrationSessionInput,
   CreateTemplateInput,
   CreateTransactionInput,
   Envelope,
   InvitationDelivery,
-  PortalSessionExchange,
+  IntegrationSessionExchange,
   Recipient,
   SaveSigningProgress,
   SigningContext,
@@ -44,6 +44,7 @@ import {
   type FileScanner,
   type ObjectStore,
   type PlatformRepository,
+  type SigningEngine,
 } from '@esign/domain';
 import { inspectPdf } from '@esign/infrastructure';
 
@@ -55,7 +56,7 @@ const DISCLOSURE = {
 
 type ApplicationClientView = Omit<ApplicationClient, 'secretHash'>;
 
-function actorType(principal: StaffPrincipal): 'staff' | 'application' | 'portal' {
+function actorType(principal: StaffPrincipal): 'staff' | 'application' | 'integration' | 'portal' {
   return principal.actorType ?? 'staff';
 }
 
@@ -72,7 +73,8 @@ function auditActor(principal: StaffPrincipal) {
 function visibleTemplate(principal: StaffPrincipal, template: Template): Template | undefined {
   if (
     actorType(principal) === 'staff' ||
-    (actorType(principal) === 'portal' && principal.delegatedScopes?.includes('templates:write'))
+    (['integration', 'portal'].includes(actorType(principal)) &&
+      principal.delegatedScopes?.includes('templates:write'))
   )
     return structuredClone(template);
   const active = template.versions.find(
@@ -96,8 +98,9 @@ export class ESignService {
     private readonly scanner: FileScanner,
     private readonly publicBaseUrl: string,
     private readonly clock: Clock,
-    private readonly portalLaunchTtlSeconds = 5 * 60,
+    private readonly launchSessionTtlSeconds = 5 * 60,
     private readonly staffSessionTtlSeconds = 60 * 60,
+    private readonly signingEngine?: SigningEngine,
   ) {}
 
   listApplicationClients(principal: StaffPrincipal): Promise<ApplicationClientView[]> {
@@ -127,7 +130,7 @@ export class ESignService {
       if (parsed.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(parsed.hostname)) {
         throw new DomainError(
           'invalid_return_url',
-          'Portal return URLs must use HTTPS outside local development.',
+          'Integration return URLs must use HTTPS outside local development.',
           422,
         );
       }
@@ -139,6 +142,7 @@ export class ESignService {
       id,
       workspaceId: principal.workspaceId,
       name: input.name,
+      connectorKey: input.connectorKey ?? `client-${id}`,
       secretHash: sha256(secret),
       scopes: [...new Set(input.scopes)],
       allowedReturnUrls: [
@@ -150,6 +154,20 @@ export class ESignService {
     };
     return this.repository.write((state) => {
       state.applicationClients ??= [];
+      if (
+        state.applicationClients.some(
+          (candidate) =>
+            candidate.workspaceId === principal.workspaceId &&
+            candidate.connectorKey === client.connectorKey &&
+            candidate.status === 'ACTIVE',
+        )
+      ) {
+        throw new DomainError(
+          'connector_key_conflict',
+          'An active integration already uses this connector key.',
+          409,
+        );
+      }
       state.applicationClients.push(client);
       appendAudit(state, {
         workspaceId: principal.workspaceId,
@@ -225,15 +243,15 @@ export class ESignService {
     });
   }
 
-  createPortalSession(
+  createIntegrationSession(
     principal: StaffPrincipal,
-    input: CreatePortalSessionInput,
+    input: CreateIntegrationSessionInput,
     context: RequestContext,
   ): Promise<{ launchUrl: string; expiresAt: string }> {
     if (actorType(principal) !== 'application' || !principal.sourceApplicationClientId) {
       throw new DomainError(
         'application_auth_required',
-        'Portal sessions must be created by an application.',
+        'Integration sessions must be created by an application.',
         403,
       );
     }
@@ -248,7 +266,7 @@ export class ESignService {
       if (!client?.allowedReturnUrls?.includes(normalizedReturnUrl)) {
         throw new DomainError(
           'return_url_not_allowed',
-          'Portal return URL is not registered for this application.',
+          'Integration return URL is not registered for this application.',
           422,
         );
       }
@@ -269,8 +287,8 @@ export class ESignService {
         findEnvelope(state, principal.workspaceId, input.intent.envelopeId);
       }
       const now = this.clock.now();
-      const expiresAt = new Date(now.getTime() + this.portalLaunchTtlSeconds * 1000).toISOString();
-      state.portalLaunchSessions.push({
+      const expiresAt = new Date(now.getTime() + this.launchSessionTtlSeconds * 1000).toISOString();
+      state.integrationLaunchSessions.push({
         id: newId(),
         ticketHash: sha256(ticket),
         workspaceId: principal.workspaceId,
@@ -284,24 +302,24 @@ export class ESignService {
       appendAudit(state, {
         workspaceId: principal.workspaceId,
         ...auditActor(principal),
-        type: 'portal_session.issued',
+        type: 'integration_session.issued',
         occurredAt: now.toISOString(),
         requestId: context.requestId,
         payload: { delegatedSubject: input.actor.subject, intent: input.intent.kind },
       });
       return {
-        launchUrl: `${this.publicBaseUrl.replace(/\/$/, '')}/portal/launch#ticket=${encodeURIComponent(ticket)}`,
+        launchUrl: `${this.publicBaseUrl.replace(/\/$/, '')}/integration/launch#ticket=${encodeURIComponent(ticket)}`,
         expiresAt,
       };
     });
   }
 
-  exchangePortalSession(
+  exchangeIntegrationSession(
     ticket: string,
     context: RequestContext,
-  ): Promise<{ sessionSecret: string; exchange: PortalSessionExchange }> {
+  ): Promise<{ sessionSecret: string; exchange: IntegrationSessionExchange }> {
     return this.repository.write((state) => {
-      const launch = state.portalLaunchSessions.find((candidate) =>
+      const launch = state.integrationLaunchSessions.find((candidate) =>
         safeSecretEqual(ticket, candidate.ticketHash),
       );
       const now = this.clock.now();
@@ -321,8 +339,8 @@ export class ESignService {
         (client.expiresAt && new Date(client.expiresAt) <= now)
       ) {
         throw new DomainError(
-          'portal_session_unavailable',
-          'This Portal launch session is unavailable.',
+          'integration_session_unavailable',
+          'This integration launch session is unavailable.',
           410,
         );
       }
@@ -354,7 +372,7 @@ export class ESignService {
         displayName: launch.actor.displayName,
         role: launch.actor.role,
         workspaceId: launch.workspaceId,
-        actorType: 'portal',
+        actorType: 'integration',
         sourceApplicationClientId: client.id,
         sourceApplicationName: client.name,
         delegatedScopes: structuredClone(client.scopes),
@@ -363,7 +381,7 @@ export class ESignService {
       appendAudit(state, {
         workspaceId: launch.workspaceId,
         ...auditActor(principal),
-        type: 'portal_session.exchanged',
+        type: 'integration_session.exchanged',
         occurredAt: now.toISOString(),
         requestId: context.requestId,
         ip: context.ip,
@@ -375,7 +393,7 @@ export class ESignService {
         exchange: {
           principal,
           csrfToken,
-          destination: this.portalDestination(launch.intent),
+          destination: this.integrationDestination(launch.intent),
           returnUrl: launch.returnUrl,
           expiresAt,
         },
@@ -383,13 +401,17 @@ export class ESignService {
     });
   }
 
-  logoutPortalSession(
+  logoutIntegrationSession(
     principal: StaffPrincipal,
     sessionSecret: string,
     context: RequestContext,
   ): Promise<{ returnUrl: string }> {
-    if (actorType(principal) !== 'portal') {
-      throw new DomainError('portal_session_required', 'Portal session is required.', 409);
+    if (!['integration', 'portal'].includes(actorType(principal))) {
+      throw new DomainError(
+        'integration_session_required',
+        'Integration session is required.',
+        409,
+      );
     }
     return this.repository.write((state) => {
       const session = state.staffSessions.find((candidate) =>
@@ -403,7 +425,7 @@ export class ESignService {
       appendAudit(state, {
         workspaceId: session.workspaceId,
         ...auditActor(principal),
-        type: 'portal_session.ended',
+        type: 'integration_session.ended',
         occurredAt: now,
         requestId: context.requestId,
         payload: {},
@@ -412,7 +434,7 @@ export class ESignService {
     });
   }
 
-  private portalDestination(intent: CreatePortalSessionInput['intent']): string {
+  private integrationDestination(intent: CreateIntegrationSessionInput['intent']): string {
     switch (intent.kind) {
       case 'edit-template':
         return `/templates/${intent.templateId}/edit`;
@@ -725,7 +747,7 @@ export class ESignService {
       const template = findTemplate(state, principal.workspaceId, templateId);
       const versions =
         actorType(principal) === 'application' ||
-        (actorType(principal) === 'portal' &&
+        (['integration', 'portal'].includes(actorType(principal)) &&
           !principal.delegatedScopes?.includes('templates:write'))
           ? template.versions.filter(
               (version) =>
@@ -973,6 +995,9 @@ export class ESignService {
     requirePermission(principal, 'envelope.send');
     if (!idempotencyKey)
       throw new DomainError('idempotency_required', 'Idempotency-Key is required.', 400);
+    if (this.signingEngine) {
+      return this.sendWithSigningEngine(principal, envelopeId, idempotencyKey, context);
+    }
     const result = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
       const replay = assertIdempotency(
@@ -1053,6 +1078,178 @@ export class ESignService {
     };
   }
 
+  private async sendWithSigningEngine(
+    principal: StaffPrincipal,
+    envelopeId: string,
+    idempotencyKey: string,
+    context: RequestContext,
+  ): Promise<{ envelope: Envelope; replayed: boolean; invitationUrls: string[] }> {
+    const prepared = await this.repository.write((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      const replay = assertIdempotency(
+        state,
+        principal.workspaceId,
+        `send:${envelopeId}`,
+        idempotencyKey,
+        { envelopeId },
+      );
+      if (replay) return { envelope: structuredClone(envelope), replayed: true, proceed: false };
+      if (envelope.approvalRequired && !envelope.approvedAt) {
+        if (envelope.status === 'PREPARED') {
+          transitionEnvelope(envelope, 'APPROVAL_PENDING', this.clock.now().toISOString());
+        }
+        return { envelope: structuredClone(envelope), replayed: false, proceed: false };
+      }
+      if (envelope.status === 'PREPARED') {
+        transitionEnvelope(envelope, 'READY_TO_SEND', this.clock.now().toISOString());
+      }
+      if (envelope.status !== 'READY_TO_SEND') {
+        throw new DomainError('invalid_transition', 'Envelope cannot be sent.', 409);
+      }
+      const now = this.clock.now();
+      if (
+        envelope.signingEngineStatus === 'SYNCING' &&
+        envelope.signingEngineSyncedAt &&
+        now.getTime() - new Date(envelope.signingEngineSyncedAt).getTime() < 5 * 60 * 1000
+      ) {
+        throw new DomainError(
+          'signing_engine_operation_in_progress',
+          'Envelope is already being prepared by the signing engine.',
+          409,
+        );
+      }
+      envelope.signingEngine = this.signingEngine!.provider;
+      envelope.signingEngineStatus = 'SYNCING';
+      envelope.signingEngineSyncedAt = now.toISOString();
+      return { envelope: structuredClone(envelope), replayed: false, proceed: true };
+    });
+    if (!prepared.proceed) {
+      return { envelope: prepared.envelope, replayed: prepared.replayed, invitationUrls: [] };
+    }
+
+    try {
+      let external = prepared.envelope.signingEngineEnvelopeId
+        ? await this.signingEngine!.getEnvelope(prepared.envelope.signingEngineEnvelopeId)
+        : await this.signingEngine!.findEnvelopeByExternalId(prepared.envelope.id);
+      if (!external) {
+        const documents = await Promise.all(
+          prepared.envelope.documents.map(async (document) => ({
+            id: document.id,
+            name: document.name,
+            order: document.order,
+            bytes: await this.objects.get(document.objectKey),
+          })),
+        );
+        external = await this.signingEngine!.createEnvelope(prepared.envelope, documents);
+      }
+      if (external.status === 'DRAFT') {
+        external = await this.signingEngine!.distributeEnvelope(external.id);
+      }
+      const firstRoutingOrder = Math.min(
+        ...prepared.envelope.recipients
+          .filter((recipient) => !['copy', 'viewer'].includes(recipient.kind))
+          .map((recipient) => recipient.routingOrder),
+      );
+      const updated = await this.repository.write((state) => {
+        const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+        envelope.signingEngine = this.signingEngine!.provider;
+        envelope.signingEngineEnvelopeId = external.id;
+        envelope.signingEngineStatus = external.status;
+        envelope.signingEngineSyncedAt = this.clock.now().toISOString();
+        if (envelope.status === 'READY_TO_SEND') {
+          transitionEnvelope(envelope, 'SENT', this.clock.now().toISOString());
+        }
+        for (const [index, recipient] of envelope.recipients.entries()) {
+          const remote =
+            external.recipients[index] ??
+            external.recipients.find(
+              (candidate) => candidate.email.toLowerCase() === recipient.email.toLowerCase(),
+            );
+          if (!remote) continue;
+          recipient.signingEngineRecipientId = remote.id;
+          if (
+            recipient.status === 'PENDING' &&
+            remote.role !== 'CC' &&
+            (remote.sendStatus === 'SENT' ||
+              (remote.sendStatus === undefined && recipient.routingOrder === firstRoutingOrder))
+          ) {
+            recipient.status = 'ACTIVE';
+          }
+        }
+        appendAudit(state, {
+          workspaceId: principal.workspaceId,
+          envelopeId,
+          ...auditActor(principal),
+          type: 'envelope.sent',
+          occurredAt: envelope.sentAt ?? this.clock.now().toISOString(),
+          requestId: context.requestId,
+          payload: { signingEngine: this.signingEngine!.provider, externalEnvelopeId: external.id },
+        });
+        recordIdempotency(
+          state,
+          principal.workspaceId,
+          `send:${envelopeId}`,
+          idempotencyKey,
+          { envelopeId },
+          { id: envelope.id },
+          this.clock.now().toISOString(),
+        );
+        return structuredClone(envelope);
+      });
+      let reconciled = updated;
+      if (external.status === 'COMPLETED' && updated.status !== 'COMPLETED') {
+        await this.handleSigningEngineEvent(
+          {
+            event: 'DOCUMENT_COMPLETED',
+            createdAt: external.completedAt ?? this.clock.now().toISOString(),
+            payload: {
+              envelopeId: external.id,
+              ...(external.externalId !== undefined ? { externalId: external.externalId } : {}),
+              status: external.status,
+              ...(external.completedAt !== undefined ? { completedAt: external.completedAt } : {}),
+              recipients: external.recipients.map((recipient) => ({
+                id: recipient.id,
+                email: recipient.email,
+                ...(recipient.readStatus !== undefined ? { readStatus: recipient.readStatus } : {}),
+                ...(recipient.signingStatus !== undefined
+                  ? { signingStatus: recipient.signingStatus }
+                  : {}),
+                ...(recipient.signedAt !== undefined ? { signedAt: recipient.signedAt } : {}),
+              })),
+            },
+          },
+          context,
+        );
+        reconciled = await this.repository.read((state) =>
+          structuredClone(findEnvelope(state, principal.workspaceId, envelopeId)),
+        );
+      }
+      return {
+        envelope: reconciled,
+        replayed: false,
+        invitationUrls: external.recipients
+          .map((recipient) => recipient.signingUrl)
+          .filter((url): url is string => Boolean(url)),
+      };
+    } catch (error) {
+      await this.repository.write((state) => {
+        const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+        envelope.signingEngineStatus = 'FAILED';
+        envelope.signingEngineSyncedAt = this.clock.now().toISOString();
+        appendAudit(state, {
+          workspaceId: principal.workspaceId,
+          envelopeId,
+          ...auditActor(principal),
+          type: 'signing_engine.sync_failed',
+          occurredAt: this.clock.now().toISOString(),
+          requestId: context.requestId,
+          payload: { signingEngine: this.signingEngine!.provider },
+        });
+      });
+      throw error;
+    }
+  }
+
   private async deliverInvitation(
     envelope: Envelope,
     invitation: InvitationDelivery,
@@ -1084,6 +1281,30 @@ export class ESignService {
     recipientId: string,
   ): Promise<{ invitationUrl: string }> {
     requirePermission(principal, 'envelope.send');
+    const external = await this.repository.read((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
+      if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
+        throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
+      }
+      return envelope.signingEngineEnvelopeId
+        ? {
+            envelopeId: envelope.signingEngineEnvelopeId,
+            recipientId: recipient.signingEngineRecipientId,
+          }
+        : undefined;
+    });
+    if (external) {
+      if (!this.signingEngine) {
+        throw new DomainError(
+          'signing_engine_disabled',
+          'External signing engine is disabled.',
+          503,
+        );
+      }
+      await this.signingEngine.redistributeEnvelope(external.envelopeId, external.recipientId);
+      return { invitationUrl: '' };
+    }
     const invitation = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
@@ -1109,7 +1330,7 @@ export class ESignService {
     return { invitationUrl: invitation.invitationUrl };
   }
 
-  voidEnvelope(
+  async voidEnvelope(
     principal: StaffPrincipal,
     envelopeId: string,
     reason: string,
@@ -1118,6 +1339,37 @@ export class ESignService {
     requirePermission(principal, 'envelope.manage');
     if (reason.trim().length < 3)
       throw new DomainError('reason_required', 'A void reason is required.', 422);
+    const externalEnvelopeId = await this.repository.read((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      if (
+        ![
+          'DRAFT',
+          'PREPARED',
+          'APPROVAL_PENDING',
+          'READY_TO_SEND',
+          'SENT',
+          'IN_PROGRESS',
+          'FAILED_FINALIZATION',
+        ].includes(envelope.status)
+      ) {
+        throw new DomainError(
+          'invalid_transition',
+          `Envelope cannot transition from ${envelope.status} to VOIDED.`,
+          409,
+        );
+      }
+      return envelope.signingEngineEnvelopeId;
+    });
+    if (externalEnvelopeId) {
+      if (!this.signingEngine) {
+        throw new DomainError(
+          'signing_engine_disabled',
+          'External signing engine is disabled.',
+          503,
+        );
+      }
+      await this.signingEngine.cancelEnvelope(externalEnvelopeId);
+    }
     return this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
       const now = this.clock.now().toISOString();
@@ -1575,6 +1827,204 @@ export class ESignService {
       file?.objectKey ?? (filename === 'manifest.json' ? evidence.manifestObjectKey : undefined);
     if (!objectKey) throw new DomainError('not_found', 'Evidence file not found.', 404);
     return this.objects.get(objectKey);
+  }
+
+  async signingEngineHealth(): Promise<{ provider: string; reachable: boolean }> {
+    if (!this.signingEngine) return { provider: 'native', reachable: true };
+    return this.signingEngine.health();
+  }
+
+  async handleSigningEngineEvent(
+    event: {
+      event: string;
+      createdAt: string;
+      payload: {
+        envelopeId: string;
+        externalId?: string | null | undefined;
+        status?: string | undefined;
+        completedAt?: string | null | undefined;
+        recipients?:
+          | Array<{
+              id?: string | number | undefined;
+              email: string;
+              readStatus?: string | undefined;
+              signingStatus?: string | undefined;
+              signedAt?: string | null | undefined;
+            }>
+          | undefined;
+      };
+    },
+    context: RequestContext,
+  ): Promise<{ accepted: true; replayed: boolean }> {
+    if (!this.signingEngine) {
+      throw new DomainError('signing_engine_disabled', 'External signing engine is disabled.', 404);
+    }
+    const eventKey = `signing-engine-event:${sha256(JSON.stringify(event))}`;
+    const local = await this.repository.read((state) => {
+      if (state.idempotency[eventKey]) return { replayed: true as const };
+      const envelope = state.envelopes.find(
+        (candidate) =>
+          candidate.signingEngineEnvelopeId === event.payload.envelopeId ||
+          candidate.id === event.payload.externalId,
+      );
+      if (!envelope) throw new DomainError('not_found', 'Envelope mapping was not found.', 404);
+      return { replayed: false as const, envelope: structuredClone(envelope) };
+    });
+    if (local.replayed) return { accepted: true, replayed: true };
+    const isCompleted =
+      event.event === 'DOCUMENT_COMPLETED' || event.payload.status === 'COMPLETED';
+
+    let completedFiles:
+      Array<{ documentId: string; objectKey: string; sha256: string }> | undefined;
+    if (isCompleted && local.envelope.status !== 'COMPLETED') {
+      const external = await this.signingEngine.getEnvelope(event.payload.envelopeId);
+      const localDocuments = [...local.envelope.documents].sort(
+        (left, right) => left.order - right.order,
+      );
+      const remoteItems = [...external.items].sort((left, right) => left.order - right.order);
+      if (remoteItems.length < localDocuments.length) {
+        throw new DomainError(
+          'signing_engine_incomplete_package',
+          'Signing engine completed package is missing a PDF.',
+          502,
+        );
+      }
+      completedFiles = await Promise.all(
+        localDocuments.map(async (document, index) => {
+          const bytes = await this.signingEngine!.downloadItem(remoteItems[index]!.id);
+          const digest = sha256(bytes);
+          const objectKey = `engine-completed/${local.envelope.workspaceId}/${local.envelope.id}/${document.order}-${document.name}`;
+          await this.objects.put(objectKey, bytes, 'application/pdf');
+          return { documentId: document.id, objectKey, sha256: digest };
+        }),
+      );
+    }
+
+    const shouldFinalize = await this.repository.write((state) => {
+      if (state.idempotency[eventKey]) return false;
+      const envelope = state.envelopes.find(
+        (candidate) =>
+          candidate.signingEngineEnvelopeId === event.payload.envelopeId ||
+          candidate.id === event.payload.externalId,
+      );
+      if (!envelope) throw new DomainError('not_found', 'Envelope mapping was not found.', 404);
+      const now = this.clock.now().toISOString();
+      envelope.signingEngine = this.signingEngine!.provider;
+      envelope.signingEngineEnvelopeId = event.payload.envelopeId;
+      envelope.signingEngineStatus = event.payload.status ?? event.event;
+      envelope.signingEngineSyncedAt = now;
+      for (const remote of event.payload.recipients ?? []) {
+        const recipient = envelope.recipients.find(
+          (candidate) =>
+            (remote.id !== undefined && candidate.signingEngineRecipientId === remote.id) ||
+            candidate.email.toLowerCase() === remote.email.toLowerCase(),
+        );
+        if (!recipient) continue;
+        if (remote.signingStatus === 'SIGNED') {
+          recipient.status = 'COMPLETED';
+          recipient.completedAt = remote.signedAt ?? event.createdAt;
+        } else if (remote.signingStatus === 'REJECTED') {
+          recipient.status = 'DECLINED';
+        } else if (remote.readStatus === 'OPENED' && recipient.status === 'ACTIVE') {
+          recipient.status = 'VIEWED';
+        }
+      }
+      const providerHasDistributed =
+        isCompleted ||
+        [
+          'DOCUMENT_SENT',
+          'DOCUMENT_OPENED',
+          'DOCUMENT_SIGNED',
+          'DOCUMENT_RECIPIENT_COMPLETED',
+          'DOCUMENT_REJECTED',
+          'DOCUMENT_CANCELLED',
+        ].includes(event.event) ||
+        ['PENDING', 'COMPLETED', 'REJECTED'].includes(event.payload.status ?? '');
+      // A provider webhook can win the race against the local post-distribution commit. Catch the
+      // projection up instead of discarding a valid lifecycle event while the local row is READY.
+      if (envelope.status === 'READY_TO_SEND' && providerHasDistributed) {
+        transitionEnvelope(envelope, 'SENT', now);
+      }
+      if (
+        event.event === 'DOCUMENT_REJECTED' &&
+        ['SENT', 'IN_PROGRESS'].includes(envelope.status)
+      ) {
+        transitionEnvelope(envelope, 'DECLINED', now);
+      } else if (
+        event.event === 'DOCUMENT_CANCELLED' &&
+        ['SENT', 'IN_PROGRESS'].includes(envelope.status)
+      ) {
+        transitionEnvelope(envelope, 'VOIDED', now);
+        envelope.voidReason = 'Cancelled in signing engine.';
+        for (const recipient of envelope.recipients) recipient.status = 'REVOKED';
+      } else if (
+        !isCompleted &&
+        envelope.status === 'SENT' &&
+        ['DOCUMENT_OPENED', 'DOCUMENT_SIGNED', 'DOCUMENT_RECIPIENT_COMPLETED'].includes(event.event)
+      ) {
+        transitionEnvelope(envelope, 'IN_PROGRESS', now);
+      }
+      let finalize = false;
+      if (isCompleted && envelope.status !== 'COMPLETED') {
+        for (const completed of completedFiles ?? []) {
+          const document = envelope.documents.find(
+            (candidate) => candidate.id === completed.documentId,
+          );
+          if (document) {
+            document.completedObjectKey = completed.objectKey;
+            document.completedSha256 = completed.sha256;
+          }
+        }
+        if (envelope.status === 'SENT') transitionEnvelope(envelope, 'IN_PROGRESS', now);
+        if (envelope.status === 'IN_PROGRESS') transitionEnvelope(envelope, 'FINALIZING', now);
+        if (envelope.status === 'FAILED_FINALIZATION') {
+          transitionEnvelope(envelope, 'FINALIZING', now);
+        }
+        finalize = envelope.status === 'FINALIZING';
+      }
+      appendAudit(state, {
+        workspaceId: envelope.workspaceId,
+        envelopeId: envelope.id,
+        actorType: 'system',
+        actorId: this.signingEngine!.provider,
+        type: `signing_engine.${event.event.toLowerCase()}`,
+        occurredAt: event.createdAt,
+        requestId: context.requestId,
+        payload: {
+          externalEnvelopeId: event.payload.envelopeId,
+          externalStatus: event.payload.status,
+        },
+      });
+      if (!finalize) {
+        state.idempotency[eventKey] = {
+          requestHash: sha256(JSON.stringify(event)),
+          response: { accepted: true },
+          createdAt: now,
+        };
+      }
+      return finalize;
+    });
+    if (shouldFinalize) {
+      try {
+        await this.finalizer.finalize(local.envelope.id);
+        await this.repository.write((state) => {
+          state.idempotency[eventKey] = {
+            requestHash: sha256(JSON.stringify(event)),
+            response: { accepted: true },
+            createdAt: this.clock.now().toISOString(),
+          };
+        });
+      } catch (error) {
+        await this.repository.write((state) => {
+          const envelope = state.envelopes.find((candidate) => candidate.id === local.envelope.id);
+          if (envelope?.status === 'FINALIZING') {
+            transitionEnvelope(envelope, 'FAILED_FINALIZATION', this.clock.now().toISOString());
+          }
+        });
+        throw error;
+      }
+    }
+    return { accepted: true, replayed: false };
   }
 
   dashboard(principal: StaffPrincipal) {

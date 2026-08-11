@@ -5,7 +5,7 @@ The development environment is deployed in the `Azure subscription free` subscri
 - Public application: `https://ca-web-kevvesign-dev.whitepond-3b391332.eastus2.azurecontainerapps.io`
 - Web, API, jobs, storage, messaging, email, Key Vault, and registry: East US 2
 - Azure SQL: Central US because this subscription currently restricts SQL creation in East US and East US 2
-- Staff entry: delegated Homix Portal session; ordinary Portal users do not create an eSign login
+- Staff entry: delegated connector session; Homix is the first connector and ordinary users do not create an eSign login
 - Recipient entry: one-time signing link; no recipient account
 
 This is a development environment, not a legal or production release. It still needs a custom domain, verified email domain, final retention policy, production network isolation, monitoring/alerts, backup/recovery review, and NY/NJ/CA counsel/broker acceptance before real transactions or employee records are used.
@@ -66,33 +66,37 @@ For a first deployment, generate a cryptographically random value instead and im
 
 ## SQL bootstrap
 
-`pnpm --filter @esign/infrastructure bootstrap:azure-sql` installs the schema, reapplies the idempotent least-privilege grants, reconciles managed-identity users by client ID, seeds the workspace administrator, and optionally seeds the first Portal application client. Run it with a short-lived Azure SQL access token and a temporary firewall rule limited to the operator's exact IP; remove that rule immediately afterward.
+`pnpm --filter @esign/infrastructure bootstrap:azure-sql` installs the schema, reapplies the idempotent least-privilege grants, reconciles managed-identity users by client ID, seeds the workspace administrator, and optionally seeds the first integration client. Run it with a short-lived Azure SQL access token and a temporary firewall rule limited to the operator's exact IP; remove that rule immediately afterward.
 
 The API and finalizer use `DefaultAzureCredential` through the `azure-active-directory-default` driver mode. Their contained database users belong only to `esign_app_role`. The role can read/write application state and append audit events, but cannot delete ledger audit rows or control the schema.
 
-## Portal credential cutover
+## Connector and identity cutover
 
 The Azure smoke credential is stored only in `kv-kevvesign-dev-lxgas2` as `portal-smoke-client-credential`. It is for deployment verification, not Homix Portal production use.
 
-For Homix Portal integration:
+For Homix Portal or another connected application:
 
 1. Register the exact Homix Portal HTTPS return URL.
 2. Issue a dedicated environment-specific application credential with only the required scopes.
 3. Store it in the Homix Portal backend secret store; never send it to browser JavaScript.
-4. Have the Portal backend call `POST /v1/portal-sessions`, then redirect the staff browser to the returned fragment-based `launchUrl`.
+4. Have the connector backend call `POST /v1/integration-sessions`, then redirect the staff browser to the returned fragment-based `launchUrl`.
 5. Verify rotation and revocation, then revoke the deployment smoke client.
 
-REST polling is the supported integration mode for the first staging cutover. Do not enable production webhooks until persistence, retry/dead-letter behavior, replay controls, and a signature-verifying consumer pass Azure integration tests.
+Configure standalone access with either the paired legacy Entra parameters or `oidcProvidersJson`. Each JSON entry supplies a unique `id`, exact `issuer`, `audience`, and HTTPS `jwksUrl`; authentication is mapped to an active workspace member by email. For Google Workspace, set `emailVerifiedClaim` to `email_verified` so unverified email claims are rejected.
+
+## Documenso cutover
+
+Keep `signingEngineProvider=native` until a self-hosted Documenso instance is available. For the cutover, pass `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets in Key Vault and exposes them to the API through managed-identity secret references. Register the API webhook endpoint and shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
 
 ## Release checks completed
 
 - Public `/health`: 200
 - Static application root: 200
 - Unauthenticated `/v1/me`: 401
-- Portal launch/exchange/session/dashboard: 201/200/200/200
+- Integration launch/exchange/session/dashboard: 201/200/200/200
 - One-time launch ticket replay: 410
-- Portal logout and post-logout access: 200/401
+- Integration logout and post-logout access: 200/401
 - API and ClamAV containers: ready with zero restarts after final rollout
 - SQL temporary operator firewall rule: removed
 
-The synthetic Portal session was logged out after verification. No licensed real-estate form, customer document, recipient email, or employee record was used.
+The synthetic integration session was logged out after verification. No licensed real-estate form, customer document, recipient email, or employee record was used. Documenso mode has not yet been deployed to this development environment.

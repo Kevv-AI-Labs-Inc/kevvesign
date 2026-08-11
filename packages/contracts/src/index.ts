@@ -24,6 +24,8 @@ export const ApplicationScopeSchema = z.enum([
   'envelopes:write',
   'envelopes:send',
   'evidence:read',
+  'integration-sessions:create',
+  // Backward-compatible scope for clients issued before the generic integration API.
   'portal-sessions:create',
 ]);
 export type ApplicationScope = z.infer<typeof ApplicationScopeSchema>;
@@ -204,6 +206,8 @@ export interface ApplicationClient {
   id: string;
   workspaceId: string;
   name: string;
+  /** Stable caller-owned identifier such as `homix-portal` or `hris-production`. */
+  connectorKey?: string;
   secretHash: string;
   scopes: ApplicationScope[];
   allowedReturnUrls: string[];
@@ -213,7 +217,7 @@ export interface ApplicationClient {
   rotatedAt?: string;
 }
 
-export const PortalActorSchema = z.object({
+export const IntegrationActorSchema = z.object({
   subject: z
     .string()
     .min(1)
@@ -223,28 +227,39 @@ export const PortalActorSchema = z.object({
   displayName: z.string().min(1).max(160),
   role: z.enum(['preparer', 'approver', 'auditor']),
 });
-export type PortalActor = z.infer<typeof PortalActorSchema>;
+export type IntegrationActor = z.infer<typeof IntegrationActorSchema>;
 
-export const PortalIntentSchema = z.discriminatedUnion('kind', [
+export const IntegrationIntentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('dashboard') }),
   z.object({ kind: z.literal('prepare-envelope'), templateId: z.string().uuid().optional() }),
   z.object({ kind: z.literal('edit-template'), templateId: z.string().uuid() }),
   z.object({ kind: z.literal('view-envelope'), envelopeId: z.string().uuid() }),
 ]);
-export type PortalIntent = z.infer<typeof PortalIntentSchema>;
+export type IntegrationIntent = z.infer<typeof IntegrationIntentSchema>;
 
-export interface PortalLaunchSession {
+export interface IntegrationLaunchSession {
   id: string;
   ticketHash: string;
   workspaceId: string;
   applicationClientId: string;
-  actor: PortalActor;
-  intent: PortalIntent;
+  actor: IntegrationActor;
+  intent: IntegrationIntent;
   returnUrl: string;
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
 }
+
+/** @deprecated Use IntegrationActor and IntegrationIntent. */
+export const PortalActorSchema = IntegrationActorSchema;
+/** @deprecated Use IntegrationActor. */
+export type PortalActor = IntegrationActor;
+/** @deprecated Use IntegrationIntentSchema. */
+export const PortalIntentSchema = IntegrationIntentSchema;
+/** @deprecated Use IntegrationIntent. */
+export type PortalIntent = IntegrationIntent;
+/** @deprecated Use IntegrationLaunchSession. */
+export type PortalLaunchSession = IntegrationLaunchSession;
 
 export interface StaffSession {
   id: string;
@@ -252,8 +267,8 @@ export interface StaffSession {
   csrfHash: string;
   workspaceId: string;
   applicationClientId: string;
-  actor: PortalActor;
-  intent: PortalIntent;
+  actor: IntegrationActor;
+  intent: IntegrationIntent;
   returnUrl: string;
   scopes: ApplicationScope[];
   createdAt: string;
@@ -302,10 +317,15 @@ export interface Recipient {
   viewedAt?: string;
   completedAt?: string;
   declineReason?: string;
+  /** Provider-owned recipient ID used for unambiguous webhook and resend correlation. */
+  signingEngineRecipientId?: string | number;
 }
 
 export interface EnvelopeDocument extends TemplateDocument {
   sourceSha256: string;
+  /** A sealed PDF returned by an external signing engine. Never rewrite this object. */
+  completedObjectKey?: string;
+  completedSha256?: string;
 }
 
 export interface Envelope {
@@ -337,6 +357,10 @@ export interface Envelope {
   retentionPolicyId: string;
   evidencePackageId?: string;
   supersedesEnvelopeId?: string;
+  signingEngine?: string;
+  signingEngineEnvelopeId?: string;
+  signingEngineStatus?: string;
+  signingEngineSyncedAt?: string;
 }
 
 export interface RecipientSession {
@@ -354,7 +378,7 @@ export interface AuditEvent {
   id: string;
   workspaceId: string;
   envelopeId?: string;
-  actorType: 'staff' | 'recipient' | 'application' | 'portal' | 'system';
+  actorType: 'staff' | 'recipient' | 'application' | 'integration' | 'portal' | 'system';
   actorId: string;
   sourceApplicationClientId?: string;
   type: string;
@@ -420,7 +444,9 @@ export interface PlatformState {
   transactions: Transaction[];
   envelopes: Envelope[];
   recipientSessions: RecipientSession[];
-  portalLaunchSessions: PortalLaunchSession[];
+  integrationLaunchSessions: IntegrationLaunchSession[];
+  /** @deprecated Read only during migration from the Portal-specific state shape. */
+  portalLaunchSessions?: PortalLaunchSession[];
   staffSessions: StaffSession[];
   auditEvents: AuditEvent[];
   evidencePackages: EvidencePackage[];
@@ -483,18 +509,28 @@ export type CreateTransactionInput = z.infer<typeof CreateTransactionInputSchema
 
 export const CreateApplicationClientInputSchema = z.object({
   name: z.string().min(2).max(120),
+  connectorKey: z
+    .string()
+    .min(2)
+    .max(80)
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .optional(),
   scopes: z.array(ApplicationScopeSchema).min(1).max(ApplicationScopeSchema.options.length),
   allowedReturnUrls: z.array(z.string().url().max(500)).max(10).default([]),
   expiresAt: z.string().datetime().optional(),
 });
 export type CreateApplicationClientInput = z.infer<typeof CreateApplicationClientInputSchema>;
 
-export const CreatePortalSessionInputSchema = z.object({
-  actor: PortalActorSchema,
-  intent: PortalIntentSchema,
+export const CreateIntegrationSessionInputSchema = z.object({
+  actor: IntegrationActorSchema,
+  intent: IntegrationIntentSchema,
   returnUrl: z.string().url().max(500),
 });
-export type CreatePortalSessionInput = z.infer<typeof CreatePortalSessionInputSchema>;
+export type CreateIntegrationSessionInput = z.infer<typeof CreateIntegrationSessionInputSchema>;
+/** @deprecated Use CreateIntegrationSessionInputSchema. */
+export const CreatePortalSessionInputSchema = CreateIntegrationSessionInputSchema;
+/** @deprecated Use CreateIntegrationSessionInput. */
+export type CreatePortalSessionInput = CreateIntegrationSessionInput;
 
 export const SaveSigningProgressSchema = z.object({
   expectedEnvelopeVersion: z.number().int().positive(),
@@ -523,11 +559,12 @@ export interface StaffPrincipal {
   displayName: string;
   role: StaffRole;
   workspaceId: string;
-  actorType?: 'staff' | 'application' | 'portal';
+  actorType?: 'staff' | 'application' | 'integration' | 'portal';
   sourceApplicationClientId?: string;
   sourceApplicationName?: string;
   delegatedScopes?: ApplicationScope[];
   returnUrl?: string;
+  identityProviderId?: string;
 }
 
 export interface ApplicationPrincipal extends StaffPrincipal {
@@ -535,13 +572,16 @@ export interface ApplicationPrincipal extends StaffPrincipal {
   scopes: ApplicationScope[];
 }
 
-export interface PortalSessionExchange {
+export interface IntegrationSessionExchange {
   principal: StaffPrincipal;
   csrfToken: string;
   destination: string;
   returnUrl: string;
   expiresAt: string;
 }
+
+/** @deprecated Use IntegrationSessionExchange. */
+export type PortalSessionExchange = IntegrationSessionExchange;
 
 export interface ApiSuccess<T> {
   data: T;

@@ -36,7 +36,7 @@ const scopes = [
   'envelopes:write',
   'envelopes:send',
   'evidence:read',
-  'portal-sessions:create',
+  'integration-sessions:create',
 ];
 
 const pool = await sql.connect({
@@ -107,6 +107,7 @@ try {
       id: config.BOOTSTRAP_CLIENT_ID,
       workspaceId,
       name: 'Azure deployment smoke client',
+      connectorKey: 'azure-smoke-client',
       secretHash: config.BOOTSTRAP_SECRET_HASH,
       scopes,
       allowedReturnUrls: [config.BOOTSTRAP_RETURN_URL],

@@ -36,6 +36,8 @@ import {
 import sql from 'mssql';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
+export { DocumensoSigningEngine } from './documenso.js';
+
 function assertSafeObjectKey(key: string): string {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,499}$/.test(key) || key.includes('..')) {
     throw new DomainError('invalid_object_key', 'Object key is invalid.', 400);
@@ -47,7 +49,8 @@ function parsePlatformState(value: string): PlatformState {
   const state = JSON.parse(value) as PlatformState;
   state.applicationClients ??= [];
   for (const client of state.applicationClients) client.allowedReturnUrls ??= [];
-  state.portalLaunchSessions ??= [];
+  state.integrationLaunchSessions ??= state.portalLaunchSessions ?? [];
+  delete state.portalLaunchSessions;
   state.staffSessions ??= [];
   state.webhookSubscriptions ??= [];
   return state;
@@ -582,7 +585,19 @@ export class PlatformEvidenceFinalizer implements EvidenceFinalizer {
           500,
         );
       }
-      const completed = await renderCompletedPdf(source, envelope, document.id);
+      let completed: Uint8Array;
+      if (document.completedObjectKey && document.completedSha256) {
+        completed = await this.objects.get(document.completedObjectKey);
+        if (sha256(completed) !== document.completedSha256) {
+          throw new DomainError(
+            'completed_hash_mismatch',
+            'Sealed document hash verification failed.',
+            500,
+          );
+        }
+      } else {
+        completed = await renderCompletedPdf(source, envelope, document.id);
+      }
       const objectKey = `completed/${envelope.workspaceId}/${envelope.id}/${document.order}-${document.name}`;
       await this.objects.put(objectKey, completed, 'application/pdf');
       files.push({

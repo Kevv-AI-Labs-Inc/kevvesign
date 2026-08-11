@@ -4,13 +4,13 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import Fastify, { type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { ZodError, z } from 'zod';
 import {
   ConsentInputSchema,
   CreateApplicationClientInputSchema,
   CreateEnvelopeInputSchema,
-  CreatePortalSessionInputSchema,
+  CreateIntegrationSessionInputSchema,
   CreateTemplateInputSchema,
   CreateTransactionInputSchema,
   SaveSigningProgressSchema,
@@ -21,6 +21,8 @@ import {
 import {
   DomainError,
   seedState,
+  safeSecretEqual,
+  sha256,
   systemClock,
   type EmailPort,
   type FileScanner,
@@ -40,6 +42,7 @@ import {
   LocalFileScanner,
   LocalObjectStore,
   PlatformEvidenceFinalizer,
+  DocumensoSigningEngine,
 } from '@esign/infrastructure';
 import type { AppConfig } from './config.js';
 import { ApplicationAuthenticator, StaffAuthenticator } from './auth.js';
@@ -53,6 +56,51 @@ declare module 'fastify' {
 
 const IdSchema = z.string().uuid();
 const TokenSchema = z.string().min(30).max(200);
+const SigningEngineWebhookSchema = z.object({
+  event: z
+    .string()
+    .min(3)
+    .max(100)
+    .regex(/^[A-Z0-9_]+$/),
+  createdAt: z.string().datetime(),
+  webhookEndpoint: z.string().url().optional(),
+  payload: z
+    .object({
+      id: z.union([z.string(), z.number()]).optional(),
+      envelopeId: z.string().min(1).max(120).optional(),
+      externalId: z.string().max(120).nullable().optional(),
+      status: z.string().max(40).optional(),
+      completedAt: z.string().datetime().nullable().optional(),
+      recipients: z
+        .array(
+          z.object({
+            id: z.union([z.string(), z.number()]).optional(),
+            email: z.string().email().max(254),
+            readStatus: z.string().max(40).optional(),
+            signingStatus: z.string().max(40).optional(),
+            signedAt: z.string().datetime().nullable().optional(),
+          }),
+        )
+        .max(100)
+        .optional(),
+      Recipient: z
+        .array(
+          z.object({
+            id: z.union([z.string(), z.number()]).optional(),
+            email: z.string().email().max(254),
+            readStatus: z.string().max(40).optional(),
+            signingStatus: z.string().max(40).optional(),
+            signedAt: z.string().datetime().nullable().optional(),
+          }),
+        )
+        .max(100)
+        .optional(),
+    })
+    .passthrough()
+    .refine((payload) => payload.envelopeId !== undefined || payload.id !== undefined, {
+      message: 'A signing-engine envelope identifier is required.',
+    }),
+});
 
 function requestContext(request: FastifyRequest): RequestContext {
   return {
@@ -99,6 +147,7 @@ export interface ApplicationDependencies {
   email: EmailPort;
   signer: ManifestSigner;
   scanner: FileScanner;
+  signingEngine?: import('@esign/domain').SigningEngine;
 }
 
 export function createDependencies(config: AppConfig): ApplicationDependencies {
@@ -132,7 +181,22 @@ export function createDependencies(config: AppConfig): ApplicationDependencies {
     config.NODE_ENV === 'production'
       ? new ClamAvFileScanner(config.CLAMAV_HOST, config.CLAMAV_PORT)
       : new LocalFileScanner();
-  return { repository, objects, email, signer, scanner };
+  const signingEngine =
+    config.SIGNING_ENGINE_PROVIDER === 'documenso'
+      ? new DocumensoSigningEngine(
+          config.DOCUMENSO_BASE_URL ?? '',
+          config.DOCUMENSO_API_TOKEN ?? '',
+          config.DOCUMENSO_REQUEST_TIMEOUT_MS,
+        )
+      : undefined;
+  return {
+    repository,
+    objects,
+    email,
+    signer,
+    scanner,
+    ...(signingEngine ? { signingEngine } : {}),
+  };
 }
 
 export async function buildServer(config: AppConfig, dependencies = createDependencies(config)) {
@@ -150,6 +214,7 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
           '*.ticket',
           '*.signature',
           '*.accessCode',
+          'req.headers.x-documenso-secret',
         ],
         censor: '[REDACTED]',
       },
@@ -193,8 +258,9 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     dependencies.scanner,
     config.PUBLIC_BASE_URL,
     systemClock,
-    config.PORTAL_LAUNCH_TTL_SECONDS,
+    config.LAUNCH_SESSION_TTL_SECONDS,
     config.STAFF_SESSION_TTL_SECONDS,
+    dependencies.signingEngine,
   );
 
   app.setErrorHandler((error, request, reply) => {
@@ -265,6 +331,47 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     service: 'esign-api',
     time: new Date().toISOString(),
   }));
+  app.get('/v1/signing-engine/health', { preHandler: staff }, async () =>
+    success(await service.signingEngineHealth()),
+  );
+  app.post(
+    '/v1/signing-engine/webhooks/documenso',
+    { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
+    async (request) => {
+      if (config.SIGNING_ENGINE_PROVIDER !== 'documenso' || !config.DOCUMENSO_WEBHOOK_SECRET) {
+        throw new DomainError('not_found', 'Resource not found.', 404);
+      }
+      const received = request.headers['x-documenso-secret'];
+      if (
+        typeof received !== 'string' ||
+        !safeSecretEqual(received, sha256(config.DOCUMENSO_WEBHOOK_SECRET))
+      ) {
+        throw new DomainError('unauthorized', 'Webhook authentication failed.', 401);
+      }
+      const event = SigningEngineWebhookSchema.parse(request.body);
+      const recipients = event.payload.recipients ?? event.payload.Recipient;
+      return success(
+        await service.handleSigningEngineEvent(
+          {
+            event: event.event,
+            createdAt: event.createdAt,
+            payload: {
+              envelopeId: String(event.payload.envelopeId ?? event.payload.id),
+              ...(event.payload.externalId !== undefined
+                ? { externalId: event.payload.externalId }
+                : {}),
+              ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
+              ...(event.payload.completedAt !== undefined
+                ? { completedAt: event.payload.completedAt }
+                : {}),
+              ...(recipients !== undefined ? { recipients } : {}),
+            },
+          },
+          requestContext(request),
+        ),
+      );
+    },
+  );
   app.get('/docs/openapi.json', async (_request, reply) =>
     reply.type('application/json').send(OPENAPI),
   );
@@ -313,6 +420,26 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     );
   });
 
+  const createIntegrationSession = async (request: FastifyRequest, reply: FastifyReply) => {
+    const result = await service.createIntegrationSession(
+      request.staff!,
+      CreateIntegrationSessionInputSchema.parse(request.body),
+      requestContext(request),
+    );
+    return reply
+      .status(201)
+      .header('cache-control', 'no-store')
+      .header('referrer-policy', 'no-referrer')
+      .send(success(result));
+  };
+  app.post(
+    '/v1/integration-sessions',
+    {
+      preHandler: application('integration-sessions:create'),
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
+    createIntegrationSession,
+  );
   app.post(
     '/v1/portal-sessions',
     {
@@ -320,24 +447,18 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
       config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
     },
     async (request, reply) => {
-      const result = await service.createPortalSession(
-        request.staff!,
-        CreatePortalSessionInputSchema.parse(request.body),
-        requestContext(request),
-      );
-      return reply
-        .status(201)
-        .header('cache-control', 'no-store')
-        .header('referrer-policy', 'no-referrer')
-        .send(success(result));
+      reply
+        .header('deprecation', 'true')
+        .header('link', '</v1/integration-sessions>; rel="successor-version"');
+      return createIntegrationSession(request, reply);
     },
   );
   app.post(
-    '/v1/portal-sessions/exchange',
+    '/v1/integration-sessions/exchange',
     { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } },
     async (request, reply) => {
       const body = z.object({ ticket: TokenSchema }).parse(request.body);
-      const result = await service.exchangePortalSession(body.ticket, requestContext(request));
+      const result = await service.exchangeIntegrationSession(body.ticket, requestContext(request));
       const secure = config.NODE_ENV === 'production';
       const maxAge = Math.max(
         1,
@@ -363,11 +484,58 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
         .send(success(result.exchange));
     },
   );
-  app.post('/v1/portal-sessions/logout', { preHandler: staff }, async (request, reply) => {
+  app.post('/v1/integration-sessions/logout', { preHandler: staff }, async (request, reply) => {
     const sessionSecret = request.cookies.esign_staff;
     if (!sessionSecret)
       throw new DomainError('staff_session_invalid', 'Staff session is unavailable.', 401);
-    const result = await service.logoutPortalSession(
+    const result = await service.logoutIntegrationSession(
+      request.staff!,
+      sessionSecret,
+      requestContext(request),
+    );
+    reply.clearCookie('esign_staff', { path: '/' });
+    reply.clearCookie('esign_staff_csrf', { path: '/' });
+    return success(result);
+  });
+
+  // Deprecated aliases remain for already-issued Homix clients while all new callers use the
+  // provider-neutral integration contract.
+  app.post(
+    '/v1/portal-sessions/exchange',
+    { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } },
+    async (request, reply) => {
+      reply.header('deprecation', 'true');
+      const body = z.object({ ticket: TokenSchema }).parse(request.body);
+      const result = await service.exchangeIntegrationSession(body.ticket, requestContext(request));
+      const secure = config.NODE_ENV === 'production';
+      const maxAge = Math.max(
+        1,
+        Math.floor((new Date(result.exchange.expiresAt).getTime() - Date.now()) / 1000),
+      );
+      reply.setCookie('esign_staff', result.sessionSecret, {
+        httpOnly: true,
+        secure,
+        sameSite: 'lax',
+        path: '/',
+        maxAge,
+      });
+      reply.setCookie('esign_staff_csrf', result.exchange.csrfToken, {
+        httpOnly: false,
+        secure,
+        sameSite: 'lax',
+        path: '/',
+        maxAge,
+      });
+      return reply.header('cache-control', 'no-store').send(success(result.exchange));
+    },
+  );
+  app.post('/v1/portal-sessions/logout', { preHandler: staff }, async (request, reply) => {
+    reply.header('deprecation', 'true');
+    const sessionSecret = request.cookies.esign_staff;
+    if (!sessionSecret) {
+      throw new DomainError('staff_session_invalid', 'Staff session is unavailable.', 401);
+    }
+    const result = await service.logoutIntegrationSession(
       request.staff!,
       sessionSecret,
       requestContext(request),
@@ -764,7 +932,7 @@ const OPENAPI = {
   openapi: '3.1.0',
   info: { title: 'Internal E-Sign API', version: '2026-08-01' },
   servers: [{ url: '/v1' }],
-  security: [{ entraBearer: [] }, { staffSession: [] }],
+  security: [{ oidcBearer: [] }, { staffSession: [] }],
   paths: {
     '/application-clients': {
       get: { summary: 'List application credentials (staff only)' },
@@ -776,66 +944,76 @@ const OPENAPI = {
     '/application-clients/{clientId}/revoke': {
       post: { summary: 'Revoke an application credential (staff only)' },
     },
-    '/portal-sessions': {
+    '/integration-sessions': {
       post: {
-        summary: 'Create a short-lived Portal editor launch',
+        summary: 'Create a short-lived connected-system editor launch',
         security: [{ applicationKey: [] }],
       },
     },
-    '/portal-sessions/exchange': {
-      post: { summary: 'Exchange a one-time Portal launch ticket for a staff session' },
+    '/integration-sessions/exchange': {
+      post: { summary: 'Exchange a one-time integration launch ticket for a staff session' },
+    },
+    '/signing-engine/health': {
+      get: { summary: 'Check the configured signing-engine connection' },
+    },
+    '/signing-engine/webhooks/documenso': {
+      post: {
+        summary: 'Receive an authenticated Documenso lifecycle event',
+        security: [{ documensoWebhookSecret: [] }],
+      },
     },
     '/templates': {
       get: {
         summary: 'List templates',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
       post: { summary: 'Upload and create a template' },
     },
     '/envelopes': {
       get: {
         summary: 'List envelopes',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
       post: {
         summary: 'Create an envelope',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
     },
     '/envelopes/{envelopeId}/send': {
       post: {
         summary: 'Send an envelope idempotently',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
     },
     '/envelopes/{envelopeId}/void': {
       post: {
         summary: 'Void an envelope',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
     },
     '/envelopes/{envelopeId}/evidence': {
       get: {
         summary: 'Get evidence package metadata',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
     },
     '/transactions': {
       get: {
         summary: 'List business transactions',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
       post: {
         summary: 'Create a business transaction',
-        security: [{ entraBearer: [] }, { applicationKey: [] }],
+        security: [{ oidcBearer: [] }, { applicationKey: [] }],
       },
     },
   },
   components: {
     securitySchemes: {
-      entraBearer: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+      oidcBearer: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
       applicationKey: { type: 'apiKey', in: 'header', name: 'X-ESign-Key' },
       staffSession: { type: 'apiKey', in: 'cookie', name: 'esign_staff' },
+      documensoWebhookSecret: { type: 'apiKey', in: 'header', name: 'X-Documenso-Secret' },
     },
   },
 };

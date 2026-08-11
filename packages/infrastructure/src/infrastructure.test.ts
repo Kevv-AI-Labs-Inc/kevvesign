@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -31,6 +31,18 @@ describe('local durable substitutes', () => {
     await expect(objects.put('../escape', Uint8Array.of(1), 'x')).rejects.toThrow(
       'Object key is invalid',
     );
+  });
+
+  it('migrates legacy Portal launch state into the provider-neutral collection', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-state-migration-'));
+    const stateFile = path.join(root, 'state.json');
+    const legacy = seedState() as unknown as Record<string, unknown>;
+    delete legacy.integrationLaunchSessions;
+    legacy.portalLaunchSessions = [];
+    await writeFile(stateFile, JSON.stringify(legacy));
+
+    const repository = new JsonFileRepository(stateFile, seedState);
+    await expect(repository.read((state) => state.integrationLaunchSessions)).resolves.toEqual([]);
   });
 
   it('writes local email outbox without invoking a provider', async () => {

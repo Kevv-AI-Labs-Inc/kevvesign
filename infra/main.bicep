@@ -41,8 +41,19 @@ param pdfFinalizerImage string
 @description('Public HTTPS origin used for staff and signer links, without a trailing slash.')
 param publicBaseUrl string
 
-param entraTenantId string
-param entraClientId string
+@description('Legacy Entra OIDC provider. Configure both values or leave both blank.')
+param entraTenantId string = ''
+param entraClientId string = ''
+@description('Provider-neutral OIDC verifier definitions. Do not place client secrets in this JSON.')
+param oidcProvidersJson string = '[]'
+@allowed(['native', 'documenso'])
+param signingEngineProvider string = 'native'
+@description('Documenso origin or API v2 base URL. Required when signingEngineProvider is documenso.')
+param documensoBaseUrl string = ''
+@secure()
+param documensoApiToken string = ''
+@secure()
+param documensoWebhookSecret string = ''
 @description('Optional sender override. Leave blank to use the Azure-managed email domain sender.')
 param acsEmailSender string = ''
 
@@ -277,6 +288,18 @@ resource acsEmailSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   properties: { value: communicationService.listKeys().primaryConnectionString }
 }
 
+resource documensoTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (signingEngineProvider == 'documenso') {
+  parent: keyVault
+  name: 'documenso-api-token'
+  properties: { value: documensoApiToken }
+}
+
+resource documensoHookSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (signingEngineProvider == 'documenso') {
+  parent: keyVault
+  name: 'documenso-webhook-secret'
+  properties: { value: documensoWebhookSecret }
+}
+
 resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   name: 'sql-${stem}-${take(uniqueString(resourceGroup().id, sqlLocation), 6)}'
   location: sqlLocation
@@ -363,7 +386,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: containerEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: [
+      secrets: concat([
         {
           name: 'session-secret'
           keyVaultUrl: sessionSecret.properties.secretUriWithVersion
@@ -374,7 +397,18 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
           keyVaultUrl: acsEmailSecret.properties.secretUriWithVersion
           identity: workloadIdentity.id
         }
-      ]
+      ], signingEngineProvider == 'documenso' ? [
+        {
+          name: 'documenso-api-token'
+          keyVaultUrl: documensoTokenSecret!.properties.secretUriWithVersion
+          identity: workloadIdentity.id
+        }
+        {
+          name: 'documenso-webhook-secret'
+          keyVaultUrl: documensoHookSecret!.properties.secretUriWithVersion
+          identity: workloadIdentity.id
+        }
+      ] : [])
       registries: [{ server: registry.properties.loginServer, identity: registryIdentity.id }]
       ingress: {
         external: false
@@ -389,7 +423,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'api'
           image: apiImage
-          env: [
+          env: concat([
             { name: 'NODE_ENV', value: 'production' }
             { name: 'PORT', value: '4100' }
             { name: 'DATABASE_DRIVER', value: 'azure-sql' }
@@ -399,10 +433,12 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'WEB_ORIGIN', value: publicBaseUrl }
             { name: 'PUBLIC_BASE_URL', value: publicBaseUrl }
             { name: 'SESSION_SECRET', secretRef: 'session-secret' }
-            { name: 'PORTAL_LAUNCH_TTL_SECONDS', value: '300' }
+            { name: 'LAUNCH_SESSION_TTL_SECONDS', value: '300' }
             { name: 'STAFF_SESSION_TTL_SECONDS', value: '3600' }
             { name: 'ENTRA_TENANT_ID', value: entraTenantId }
             { name: 'ENTRA_CLIENT_ID', value: entraClientId }
+            { name: 'OIDC_PROVIDERS_JSON', value: oidcProvidersJson }
+            { name: 'SIGNING_ENGINE_PROVIDER', value: signingEngineProvider }
             { name: 'ACS_EMAIL_CONNECTION_STRING', secretRef: 'acs-email' }
             { name: 'ACS_EMAIL_SENDER', value: resolvedAcsEmailSender }
             { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Integrated;Client Id=${workloadIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }
@@ -410,7 +446,12 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_KEY_VAULT_URL', value: keyVault.properties.vaultUri }
             { name: 'CLAMAV_HOST', value: '127.0.0.1' }
             { name: 'CLAMAV_PORT', value: '3310' }
-          ]
+          ], signingEngineProvider == 'documenso' ? [
+            { name: 'DOCUMENSO_BASE_URL', value: documensoBaseUrl }
+            { name: 'DOCUMENSO_API_TOKEN', secretRef: 'documenso-api-token' }
+            { name: 'DOCUMENSO_WEBHOOK_SECRET', secretRef: 'documenso-webhook-secret' }
+            { name: 'DOCUMENSO_REQUEST_TIMEOUT_MS', value: '15000' }
+          ] : [])
           resources: { cpu: json('0.5'), memory: '1Gi' }
         }
         {

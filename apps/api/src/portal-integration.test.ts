@@ -24,8 +24,9 @@ const config: AppConfig = {
   DATABASE_DRIVER: 'memory',
   EMAIL_DRIVER: 'local',
   SIGNING_DRIVER: 'local',
+  SIGNING_ENGINE_PROVIDER: 'native',
   SESSION_SECRET: 'test-secret-at-least-thirty-two-characters',
-  PORTAL_LAUNCH_TTL_SECONDS: 300,
+  LAUNCH_SESSION_TTL_SECONDS: 300,
   STAFF_SESSION_TTL_SECONDS: 3600,
   LOCAL_STAFF_EMAIL: 'admin@example.test',
   LOCAL_STAFF_ROLE: 'platform_admin',
@@ -33,18 +34,20 @@ const config: AppConfig = {
   AZURE_MANIFEST_KEY_NAME: 'esign-manifest',
   CLAMAV_HOST: '127.0.0.1',
   CLAMAV_PORT: 3310,
+  OIDC_PROVIDERS_JSON: '[]',
+  DOCUMENSO_REQUEST_TIMEOUT_MS: 15_000,
 };
 
 function cookies(response: { cookies: Array<{ name: string; value: string }> }): string {
   return response.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
 }
 
-describe('Portal delegated staff access', () => {
+describe('pluggable delegated staff access', () => {
   const servers: Array<Awaited<ReturnType<typeof buildServer>>> = [];
   afterEach(async () => Promise.all(servers.splice(0).map((server) => server.close())));
 
   it('uses an exact return URL, a one-time fragment ticket, scoped CSRF, and dual attribution', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-portal-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-integration-'));
     const repository = new InMemoryRepository(seedState());
     const server = await buildServer(config, {
       repository,
@@ -59,28 +62,43 @@ describe('Portal delegated staff access', () => {
       method: 'POST',
       url: '/v1/application-clients',
       payload: {
-        name: 'Homix Portal',
+        name: 'Acme CRM',
+        connectorKey: 'acme-crm',
         scopes: [
-          'portal-sessions:create',
+          'integration-sessions:create',
           'transactions:read',
           'transactions:write',
           'envelopes:read',
         ],
-        allowedReturnUrls: ['https://portal.homixliving.com/esign/return'],
+        allowedReturnUrls: ['https://crm.example.test/esign/return'],
       },
     });
     expect(issued.statusCode).toBe(201);
     const client = issued.json().data;
+    expect(client.client.connectorKey).toBe('acme-crm');
+
+    const duplicateConnector = await server.inject({
+      method: 'POST',
+      url: '/v1/application-clients',
+      payload: {
+        name: 'Duplicate CRM connector',
+        connectorKey: 'acme-crm',
+        scopes: ['integration-sessions:create'],
+        allowedReturnUrls: ['https://other.example.test/esign/return'],
+      },
+    });
+    expect(duplicateConnector.statusCode).toBe(409);
+    expect(duplicateConnector.json().error.code).toBe('connector_key_conflict');
 
     const invalidReturn = await server.inject({
       method: 'POST',
-      url: '/v1/portal-sessions',
+      url: '/v1/integration-sessions',
       headers: { 'x-esign-key': client.credential },
       payload: {
         actor: {
-          subject: 'homix:user-42',
-          email: 'agent@homixliving.com',
-          displayName: 'Homix Agent',
+          subject: 'acme:user-42',
+          email: 'agent@example.test',
+          displayName: 'Acme Agent',
           role: 'preparer',
         },
         intent: { kind: 'dashboard' },
@@ -92,29 +110,29 @@ describe('Portal delegated staff access', () => {
 
     const launch = await server.inject({
       method: 'POST',
-      url: '/v1/portal-sessions',
+      url: '/v1/integration-sessions',
       headers: { 'x-esign-key': client.credential },
       payload: {
         actor: {
-          subject: 'homix:user-42',
-          email: 'agent@homixliving.com',
-          displayName: 'Homix Agent',
+          subject: 'acme:user-42',
+          email: 'agent@example.test',
+          displayName: 'Acme Agent',
           role: 'preparer',
         },
         intent: { kind: 'dashboard' },
-        returnUrl: 'https://portal.homixliving.com/esign/return',
+        returnUrl: 'https://crm.example.test/esign/return',
       },
     });
     expect(launch.statusCode).toBe(201);
     const launchUrl = new URL(launch.json().data.launchUrl);
-    expect(launchUrl.pathname).toBe('/portal/launch');
+    expect(launchUrl.pathname).toBe('/integration/launch');
     expect(launchUrl.search).toBe('');
     const ticket = new URLSearchParams(launchUrl.hash.slice(1)).get('ticket');
     expect(ticket).toMatch(/^[A-Za-z0-9_-]{40,}$/);
 
     const exchange = await server.inject({
       method: 'POST',
-      url: '/v1/portal-sessions/exchange',
+      url: '/v1/integration-sessions/exchange',
       payload: { ticket },
     });
     expect(exchange.statusCode).toBe(200);
@@ -122,9 +140,9 @@ describe('Portal delegated staff access', () => {
     expect(exchange.json().data).toMatchObject({
       destination: '/',
       principal: {
-        id: 'homix:user-42',
-        actorType: 'portal',
-        sourceApplicationName: 'Homix Portal',
+        id: 'acme:user-42',
+        actorType: 'integration',
+        sourceApplicationName: 'Acme CRM',
       },
     });
     expect(exchange.cookies.find((cookie) => cookie.name === 'esign_staff')?.httpOnly).toBe(true);
@@ -134,20 +152,20 @@ describe('Portal delegated staff access', () => {
 
     const replay = await server.inject({
       method: 'POST',
-      url: '/v1/portal-sessions/exchange',
+      url: '/v1/integration-sessions/exchange',
       payload: { ticket },
     });
     expect(replay.statusCode).toBe(410);
 
     const me = await server.inject({ method: 'GET', url: '/v1/me', headers: { cookie } });
     expect(me.statusCode).toBe(200);
-    expect(me.json().data.returnUrl).toBe('https://portal.homixliving.com/esign/return');
+    expect(me.json().data.returnUrl).toBe('https://crm.example.test/esign/return');
 
     const noCsrf = await server.inject({
       method: 'POST',
       url: '/v1/transactions',
       headers: { cookie },
-      payload: { kind: 'PROPERTY', name: 'Portal-created transaction', jurisdiction: 'NY' },
+      payload: { kind: 'PROPERTY', name: 'CRM-created transaction', jurisdiction: 'NY' },
     });
     expect(noCsrf.statusCode).toBe(403);
     expect(noCsrf.json().error.code).toBe('csrf_invalid');
@@ -156,35 +174,35 @@ describe('Portal delegated staff access', () => {
       method: 'POST',
       url: '/v1/transactions',
       headers: { cookie, 'x-csrf-token': csrf! },
-      payload: { kind: 'PROPERTY', name: 'Portal-created transaction', jurisdiction: 'NY' },
+      payload: { kind: 'PROPERTY', name: 'CRM-created transaction', jurisdiction: 'NY' },
     });
     expect(created.statusCode).toBe(201);
 
     const snapshot = repository.snapshot();
-    expect(snapshot.portalLaunchSessions).toHaveLength(1);
+    expect(snapshot.integrationLaunchSessions).toHaveLength(1);
     expect(snapshot.staffSessions).toHaveLength(1);
     expect(
-      snapshot.auditEvents.find((event) => event.type === 'portal_session.exchanged'),
+      snapshot.auditEvents.find((event) => event.type === 'integration_session.exchanged'),
     ).toMatchObject({
-      actorType: 'portal',
-      actorId: 'homix:user-42',
+      actorType: 'integration',
+      actorId: 'acme:user-42',
       sourceApplicationClientId: client.client.id,
     });
     expect(
       snapshot.auditEvents.find((event) => event.type === 'transaction.created'),
     ).toMatchObject({
-      actorType: 'portal',
-      actorId: 'homix:user-42',
+      actorType: 'integration',
+      actorId: 'acme:user-42',
       sourceApplicationClientId: client.client.id,
     });
 
     const logout = await server.inject({
       method: 'POST',
-      url: '/v1/portal-sessions/logout',
+      url: '/v1/integration-sessions/logout',
       headers: { cookie, 'x-csrf-token': csrf! },
     });
     expect(logout.statusCode).toBe(200);
-    expect(logout.json().data.returnUrl).toBe('https://portal.homixliving.com/esign/return');
+    expect(logout.json().data.returnUrl).toBe('https://crm.example.test/esign/return');
     expect(
       (await server.inject({ method: 'GET', url: '/v1/me', headers: { cookie } })).statusCode,
     ).toBe(401);

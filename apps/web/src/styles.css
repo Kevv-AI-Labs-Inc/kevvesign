@@ -192,6 +192,22 @@ small {
   padding-top: 18px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
+.source-link {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: auto 0 14px;
+  color: #89a096;
+  font-size: 0.67rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.source-link:hover {
+  color: #d9be82;
+}
+.source-link + .sidebar-foot {
+  margin-top: 0;
+}
 .sidebar-foot > span:nth-child(2) {
   min-width: 0;
   display: flex;

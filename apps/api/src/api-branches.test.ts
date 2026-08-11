@@ -29,8 +29,9 @@ const baseConfig: AppConfig = {
   DATABASE_DRIVER: 'memory',
   EMAIL_DRIVER: 'local',
   SIGNING_DRIVER: 'local',
+  SIGNING_ENGINE_PROVIDER: 'native',
   SESSION_SECRET: 'test-secret-at-least-thirty-two-characters',
-  PORTAL_LAUNCH_TTL_SECONDS: 300,
+  LAUNCH_SESSION_TTL_SECONDS: 300,
   STAFF_SESSION_TTL_SECONDS: 3600,
   LOCAL_STAFF_EMAIL: 'admin@example.test',
   LOCAL_STAFF_ROLE: 'platform_admin',
@@ -38,6 +39,8 @@ const baseConfig: AppConfig = {
   AZURE_MANIFEST_KEY_NAME: 'esign-manifest',
   CLAMAV_HOST: '127.0.0.1',
   CLAMAV_PORT: 3310,
+  OIDC_PROVIDERS_JSON: '[]',
+  DOCUMENSO_REQUEST_TIMEOUT_MS: 15_000,
 };
 
 async function syntheticPdf(): Promise<Uint8Array> {
@@ -83,6 +86,11 @@ describe('configuration and staff authentication', () => {
   it('loads safe local defaults and rejects invalid or incomplete production settings', () => {
     expect(loadConfig({}).DATABASE_DRIVER).toBe('file');
     expect(() => loadConfig({ PORT: '70000' })).toThrow('Invalid environment configuration');
+    expect(() => loadConfig({ ENTRA_TENANT_ID: 'tenant' })).toThrow('must be configured together');
+    expect(() => loadConfig({ OIDC_PROVIDERS_JSON: '{}' })).toThrow('must contain a JSON array');
+    expect(() => loadConfig({ SIGNING_ENGINE_PROVIDER: 'documenso' })).toThrow(
+      'Documenso requires',
+    );
     expect(() => loadConfig({ NODE_ENV: 'production' })).toThrow(
       'Missing production configuration',
     );

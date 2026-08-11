@@ -6,7 +6,7 @@ info:
 servers:
   - url: https://api.esign.example/v1
 security:
-  - entraBearer: []
+  - oidcBearer: []
   - staffSession: []
 paths:
   /me:
@@ -20,6 +20,11 @@ paths:
       operationId: getWorkspaceDashboard
       responses:
         '200': { description: Workspace dashboard }
+  /signing-engine/health:
+    get:
+      operationId: getSigningEngineHealth
+      responses:
+        '200': { description: Configured signing-engine reachability }
   /application-clients:
     get:
       operationId: listApplicationClients
@@ -59,9 +64,9 @@ paths:
       responses:
         '200': { description: Revoked client metadata }
         '404': { $ref: '#/components/responses/NotFound' }
-  /portal-sessions:
+  /integration-sessions:
     post:
-      operationId: createPortalSession
+      operationId: createIntegrationSession
       security:
         - applicationKey: []
       description: >-
@@ -71,14 +76,14 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CreatePortalSession' }
+            schema: { $ref: '#/components/schemas/CreateIntegrationSession' }
       responses:
-        '201': { description: Short-lived Portal launch URL and expiration }
+        '201': { description: Short-lived connected-system launch URL and expiration }
         '403': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationError' }
-  /portal-sessions/exchange:
+  /integration-sessions/exchange:
     post:
-      operationId: exchangePortalSession
+      operationId: exchangeIntegrationSession
       security: []
       description: Exchanges the one-time launch ticket for a bounded HttpOnly staff session.
       requestBody:
@@ -92,20 +97,29 @@ paths:
       responses:
         '200': { description: Delegated staff context, destination, and staff-session cookies }
         '410': { description: Launch unavailable without context disclosure }
-  /portal-sessions/logout:
+  /integration-sessions/logout:
     post:
-      operationId: endPortalSession
+      operationId: endIntegrationSession
       security:
         - staffSession: []
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
       responses:
-        '200': { description: Session revoked and registered Portal return URL returned }
+        '200': { description: Session revoked and registered source return URL returned }
+  /signing-engine/webhooks/documenso:
+    post:
+      operationId: receiveDocumensoEvent
+      security:
+        - documensoWebhookSecret: []
+      description: Authenticated, replay-safe lifecycle projection from Documenso.
+      responses:
+        '200': { description: Event accepted or already processed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /templates:
     get:
       operationId: listTemplates
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `templates:read`.
       parameters:
@@ -139,7 +153,7 @@ paths:
     get:
       operationId: getTemplate
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `templates:read`.
       responses:
@@ -174,7 +188,7 @@ paths:
     get:
       operationId: listTransactions
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `transactions:read`.
       responses:
@@ -182,7 +196,7 @@ paths:
     post:
       operationId: createTransaction
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `transactions:write`.
       requestBody:
@@ -197,7 +211,7 @@ paths:
     get:
       operationId: listEnvelopes
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `envelopes:read`.
       parameters:
@@ -208,7 +222,7 @@ paths:
     post:
       operationId: createEnvelope
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `envelopes:write`.
       parameters:
@@ -228,7 +242,7 @@ paths:
     get:
       operationId: getEnvelope
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `envelopes:read`.
       responses:
@@ -249,7 +263,7 @@ paths:
     post:
       operationId: sendEnvelope
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `envelopes:send`.
       responses:
@@ -262,7 +276,7 @@ paths:
     post:
       operationId: voidEnvelope
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `envelopes:write`.
       requestBody:
@@ -286,7 +300,7 @@ paths:
     post:
       operationId: resendInvitation
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `envelopes:send`.
       responses:
@@ -297,7 +311,7 @@ paths:
     get:
       operationId: getEvidencePackage
       security:
-        - entraBearer: []
+        - oidcBearer: []
         - applicationKey: []
       description: Application credentials require `evidence:read`.
       responses:
@@ -365,7 +379,7 @@ paths:
         '422': { $ref: '#/components/responses/ValidationError' }
 components:
   securitySchemes:
-    entraBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+    oidcBearer: { type: http, scheme: bearer, bearerFormat: JWT }
     applicationKey:
       type: apiKey
       in: header
@@ -379,7 +393,11 @@ components:
       type: apiKey
       in: cookie
       name: esign_staff
-      description: Short-lived session issued from a one-time source-Portal handoff.
+      description: Short-lived session issued from a one-time connected-system handoff.
+    documensoWebhookSecret:
+      type: apiKey
+      in: header
+      name: X-Documenso-Secret
   parameters:
     Cursor: { name: cursor, in: query, schema: { type: string, maxLength: 500 } }
     Limit:
@@ -429,7 +447,7 @@ components:
         displayName: { type: string }
         role: { enum: [platform_admin, workspace_admin, preparer, approver, auditor] }
         workspaceId: { type: string, format: uuid }
-        actorType: { enum: [staff, portal] }
+        actorType: { enum: [staff, integration] }
         sourceApplicationClientId: { type: string, format: uuid }
         sourceApplicationName: { type: string }
         returnUrl: { type: string, format: uri }
@@ -465,6 +483,7 @@ components:
       required: [name, scopes]
       properties:
         name: { type: string, minLength: 2, maxLength: 120 }
+        connectorKey: { type: string, minLength: 2, maxLength: 80, pattern: '^[a-z0-9][a-z0-9-]*$' }
         scopes:
           type: array
           minItems: 1
@@ -479,14 +498,14 @@ components:
               - envelopes:write
               - envelopes:send
               - evidence:read
-              - portal-sessions:create
+              - integration-sessions:create
         allowedReturnUrls:
           type: array
           maxItems: 10
           uniqueItems: true
           items: { type: string, format: uri, maxLength: 500 }
         expiresAt: { type: string, format: date-time }
-    CreatePortalSession:
+    CreateIntegrationSession:
       type: object
       required: [actor, intent, returnUrl]
       properties:

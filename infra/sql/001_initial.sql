@@ -110,21 +110,21 @@ CREATE TABLE esign.recipient_sessions (
   INDEX IX_recipient_sessions_envelope (workspace_id, envelope_id, recipient_id)
 );
 
-CREATE TABLE esign.portal_launch_sessions (
-  id uniqueidentifier NOT NULL CONSTRAINT PK_portal_launch_sessions PRIMARY KEY,
+CREATE TABLE esign.integration_launch_sessions (
+  id uniqueidentifier NOT NULL CONSTRAINT PK_integration_launch_sessions PRIMARY KEY,
   workspace_id uniqueidentifier NOT NULL,
   application_client_id uniqueidentifier NOT NULL,
-  ticket_hash char(64) NOT NULL CONSTRAINT UQ_portal_launch_ticket_hash UNIQUE,
+  ticket_hash char(64) NOT NULL CONSTRAINT UQ_integration_launch_ticket_hash UNIQUE,
   actor_subject nvarchar(120) NOT NULL,
-  actor_json nvarchar(max) NOT NULL CONSTRAINT CK_portal_launch_actor CHECK (ISJSON(actor_json) = 1),
-  intent_json nvarchar(max) NOT NULL CONSTRAINT CK_portal_launch_intent CHECK (ISJSON(intent_json) = 1),
+  actor_json nvarchar(max) NOT NULL CONSTRAINT CK_integration_launch_actor CHECK (ISJSON(actor_json) = 1),
+  intent_json nvarchar(max) NOT NULL CONSTRAINT CK_integration_launch_intent CHECK (ISJSON(intent_json) = 1),
   return_url nvarchar(500) NOT NULL,
   created_at datetime2(7) NOT NULL,
   expires_at datetime2(7) NOT NULL,
   used_at datetime2(7) NULL,
-  CONSTRAINT FK_portal_launch_workspace FOREIGN KEY (workspace_id) REFERENCES esign.workspaces(id),
-  CONSTRAINT FK_portal_launch_client FOREIGN KEY (application_client_id) REFERENCES esign.application_clients(id),
-  INDEX IX_portal_launch_expiry (workspace_id, expires_at)
+  CONSTRAINT FK_integration_launch_workspace FOREIGN KEY (workspace_id) REFERENCES esign.workspaces(id),
+  CONSTRAINT FK_integration_launch_client FOREIGN KEY (application_client_id) REFERENCES esign.application_clients(id),
+  INDEX IX_integration_launch_expiry (workspace_id, expires_at)
 );
 
 CREATE TABLE esign.staff_sessions (
@@ -214,6 +214,6 @@ CREATE TABLE esign.email_deliveries (
 );
 
 INSERT dbo.platform_state (singleton_id, state_json)
-VALUES (1, N'{"workspaces":[],"applicationClients":[],"templates":[],"transactions":[],"envelopes":[],"recipientSessions":[],"portalLaunchSessions":[],"staffSessions":[],"auditEvents":[],"evidencePackages":[],"emailDeliveries":[],"webhookSubscriptions":[],"idempotency":{}}');
+VALUES (1, N'{"workspaces":[],"applicationClients":[],"templates":[],"transactions":[],"envelopes":[],"recipientSessions":[],"integrationLaunchSessions":[],"staffSessions":[],"auditEvents":[],"evidencePackages":[],"emailDeliveries":[],"webhookSubscriptions":[],"idempotency":{}}');
 
 COMMIT TRANSACTION;

@@ -9,6 +9,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Code2,
   Clock3,
   FileCheck2,
   FilePlus2,
@@ -104,7 +105,8 @@ export function App() {
   return (
     <Routes>
       <Route path="/sign/:token" element={<SigningPage />} />
-      <Route path="/portal/launch" element={<PortalLaunchPage />} />
+      <Route path="/integration/launch" element={<IntegrationLaunchPage />} />
+      <Route path="/portal/launch" element={<IntegrationLaunchPage legacyPath />} />
       <Route element={<StaffShell />}>
         <Route index element={<DashboardPage />} />
         <Route path="templates" element={<TemplatesPage />} />
@@ -125,14 +127,14 @@ export function App() {
 function StaffShell() {
   const { data: me, error } = useLoad(() => api<StaffPrincipal>('/v1/me'));
   const returning = useRef(false);
-  const isPortal = me?.actorType === 'portal';
+  const isDelegated = me?.actorType === 'integration' || me?.actorType === 'portal';
   const allows = (scope: ApplicationScope) =>
-    !isPortal || Boolean(me?.delegatedScopes?.includes(scope));
-  async function returnToPortal() {
+    !isDelegated || Boolean(me?.delegatedScopes?.includes(scope));
+  async function returnToSource() {
     if (returning.current || !me?.returnUrl) return;
     returning.current = true;
     try {
-      const result = await api<{ returnUrl: string }>('/v1/portal-sessions/logout', {
+      const result = await api<{ returnUrl: string }>('/v1/integration-sessions/logout', {
         method: 'POST',
       });
       window.location.assign(result.returnUrl);
@@ -146,7 +148,7 @@ function StaffShell() {
         <div className="portal-launch-card error">
           <CircleAlert />
           <span className="eyebrow">Access unavailable</span>
-          <h1>Open this workspace from Homix Portal</h1>
+          <h1>Open this workspace from your connected system</h1>
           <p>{error}</p>
         </div>
       </div>
@@ -170,7 +172,7 @@ function StaffShell() {
           </span>
           <span>
             <strong>Closing Room</strong>
-            <small>{isPortal ? 'Portal workspace' : 'Private e-sign'}</small>
+            <small>{isDelegated ? 'Connected workspace' : 'Private e-sign'}</small>
           </span>
         </Link>
         <nav aria-label="Primary">
@@ -186,22 +188,32 @@ function StaffShell() {
           {allows('templates:read') && (
             <SidebarLink to="/templates" icon={<Files />} label="Templates" />
           )}
-          {!isPortal && <SidebarLink to="/hr" icon={<BriefcaseBusiness />} label="HR onboarding" />}
-          {!isPortal && <span className="nav-section">Control</span>}
-          {!isPortal && <SidebarLink to="/audit" icon={<Activity />} label="Audit trail" />}
-          {!isPortal && <SidebarLink to="/settings" icon={<Settings />} label="Workspace" />}
+          {!isDelegated && (
+            <SidebarLink to="/hr" icon={<BriefcaseBusiness />} label="HR onboarding" />
+          )}
+          {!isDelegated && <span className="nav-section">Control</span>}
+          {!isDelegated && <SidebarLink to="/audit" icon={<Activity />} label="Audit trail" />}
+          {!isDelegated && <SidebarLink to="/settings" icon={<Settings />} label="Workspace" />}
         </nav>
-        <div className={`sidebar-foot ${isPortal ? 'portal-user' : ''}`}>
+        <a
+          className="source-link"
+          href="https://github.com/Kevv-AI-Labs-Inc/kevvesign"
+          target="_blank"
+          rel="noreferrer"
+        >
+          <Code2 size={15} /> AGPL source
+        </a>
+        <div className={`sidebar-foot ${isDelegated ? 'portal-user' : ''}`}>
           <span className="avatar">{me?.displayName?.slice(0, 2).toUpperCase() ?? 'ES'}</span>
           <span>
             <strong>{me?.displayName ?? 'Loading…'}</strong>
             <small>
               {me?.role.replaceAll('_', ' ') ?? ''}
-              {isPortal ? ` · via ${me?.sourceApplicationName ?? 'Portal'}` : ''}
+              {isDelegated ? ` · via ${me?.sourceApplicationName ?? 'connected system'}` : ''}
             </small>
           </span>
-          {isPortal && me?.returnUrl && (
-            <button onClick={() => void returnToPortal()} aria-label="Return to Homix Portal">
+          {isDelegated && me?.returnUrl && (
+            <button onClick={() => void returnToSource()} aria-label="Return to connected system">
               <LogOut />
             </button>
           )}
@@ -214,7 +226,7 @@ function StaffShell() {
   );
 }
 
-function PortalLaunchPage() {
+function IntegrationLaunchPage({ legacyPath = false }: { legacyPath?: boolean }) {
   const navigate = useNavigate();
   const started = useRef(false);
   const [error, setError] = useState<string>();
@@ -222,33 +234,40 @@ function PortalLaunchPage() {
     () => new URLSearchParams(window.location.hash.replace(/^#/, '')).get('ticket') ?? '',
   );
   useEffect(() => {
-    window.history.replaceState(null, '', '/portal/launch');
+    window.history.replaceState(null, '', legacyPath ? '/portal/launch' : '/integration/launch');
     if (started.current) return;
     started.current = true;
     if (!ticket) {
-      setError('The Portal launch ticket is missing. Return to Homix Portal and try again.');
+      setError(
+        'The launch ticket is missing. Return to the system that sent you here and try again.',
+      );
       return;
     }
-    void api<import('@esign/contracts').PortalSessionExchange>('/v1/portal-sessions/exchange', {
-      method: 'POST',
-      body: JSON.stringify({ ticket }),
-    })
+    void api<import('@esign/contracts').IntegrationSessionExchange>(
+      '/v1/integration-sessions/exchange',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ticket }),
+      },
+    )
       .then((result) => navigate(result.destination, { replace: true }))
       .catch((caught: unknown) =>
-        setError(caught instanceof Error ? caught.message : 'Portal access could not be started.'),
+        setError(
+          caught instanceof Error ? caught.message : 'Connected access could not be started.',
+        ),
       );
-  }, [navigate, ticket]);
+  }, [legacyPath, navigate, ticket]);
   return (
     <div className="portal-launch-page">
       <div className={`portal-launch-card ${error ? 'error' : ''}`}>
         <span className="brand-seal">
           {error ? <CircleAlert /> : <LoaderCircle className="spin" />}
         </span>
-        <span className="eyebrow">Homix Portal · secure handoff</span>
+        <span className="eyebrow">Connected system · secure handoff</span>
         <h1>{error ? 'This workspace could not be opened' : 'Opening your signing workspace'}</h1>
         <p>
           {error ??
-            'Verifying the one-time handoff and carrying your Portal identity into eSign. No second login is required.'}
+            'Verifying the one-time handoff and carrying your existing identity into eSign. No second login is required.'}
         </p>
       </div>
     </div>
@@ -1667,8 +1686,9 @@ function SettingsPage() {
             'envelopes:write',
             'envelopes:send',
             'evidence:read',
-            'portal-sessions:create',
+            'integration-sessions:create',
           ],
+          connectorKey: form.get('connectorKey'),
           allowedReturnUrls: [form.get('returnUrl')],
         }),
       });
@@ -1723,8 +1743,8 @@ function SettingsPage() {
         <Setting
           icon={<KeyRound />}
           title="Primary staff entry"
-          value="Homix Portal"
-          body="Agents and HR receive a short-lived delegated session with no second login."
+          value="Connected systems + OIDC"
+          body="Homix, future portals, and configured identity providers use the same pluggable boundary."
         />
         <Setting
           icon={<MailCheck />}
@@ -1763,8 +1783,8 @@ function SettingsPage() {
             <span className="eyebrow">Project integrations</span>
             <h2>Application credentials</h2>
             <p>
-              Portal backends use a workspace-scoped credential to call the API and issue one-time
-              editor handoffs. Credentials never enter the employee's browser.
+              Connected backends use a workspace-scoped credential to call the API and issue
+              one-time editor handoffs. Credentials never enter the employee's browser.
             </p>
           </div>
         </div>
@@ -1791,12 +1811,21 @@ function SettingsPage() {
             <input name="name" required minLength={2} placeholder="Listing portal · production" />
           </label>
           <label>
-            Allowed Portal return URL
+            Connector key
+            <input
+              name="connectorKey"
+              required
+              pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+              placeholder="homix-portal"
+            />
+          </label>
+          <label>
+            Allowed return URL
             <input
               name="returnUrl"
               type="url"
               required
-              placeholder="https://portal.homixliving.com/esign/return"
+              placeholder="https://app.example.com/esign/return"
             />
           </label>
           <button className="button primary">
@@ -1809,7 +1838,8 @@ function SettingsPage() {
               <div>
                 <strong>{client.name}</strong>
                 <small>{client.scopes.join(' · ')}</small>
-                <small>{client.allowedReturnUrls.join(' · ') || 'No Portal return URL'}</small>
+                <small>Connector: {client.connectorKey ?? 'legacy'}</small>
+                <small>{client.allowedReturnUrls.join(' · ') || 'No return URL'}</small>
               </div>
               <StatusPill status={client.status} />
               {client.status === 'ACTIVE' && (

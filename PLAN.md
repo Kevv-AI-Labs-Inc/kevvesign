@@ -8,10 +8,11 @@ Build a private, shared e-signature platform for the organization's own products
 - Ordinary US employee onboarding documents.
 - A visual drag-and-drop PDF field designer.
 - Accountless external signing from one invitation email and one click.
-- Staff initiate work in Homix Portal and enter eSign preparation/editor screens without a second login.
+- Staff initiate work in Homix Portal or another registered system and enter eSign preparation/editor screens without a second login.
 - Sequential and parallel recipients, reminders, deadlines, decline, void, correction, and completion.
 - Immutable completed documents, completion certificates, tamper-evident audit history, retention, and legal holds.
 - Versioned REST APIs and signed webhooks for existing and future internal projects.
+- A replaceable signing-engine boundary, with Documenso as the preferred production engine for signing, routing, delivery, and sealed PDFs.
 
 Azure will be the system of record. Version one will use a modular TypeScript monorepo, Azure Container Apps, Durable Functions, Azure SQL with Ledger, private Blob Storage with immutable retention, Key Vault, Service Bus, Communication Services Email, a small standalone administrator identity provider, and Application Insights.
 
@@ -26,11 +27,13 @@ The platform is an internal shared service, not a public SaaS. External signers 
 | Initial business domains          | Real estate and ordinary HR onboarding                                          |
 | External recipient authentication | Single secure email invitation link by default                                  |
 | Enhanced authentication           | Optional separately communicated access code                                    |
-| Normal staff entry                | Homix Portal delegated session; no second eSign login                           |
-| Standalone administrator          | Exceptional access only; Google Workspace preferred at deployment gate          |
+| Normal staff entry                | Provider-neutral delegated session; Homix is the first connector                |
+| Standalone administrator          | Configurable OIDC providers; Google Workspace or Entra can be registered        |
 | Source documents                  | Private PDFs for which the organization already has legal authorization         |
 | Template authoring                | Visual drag/drop field placement with immutable template versions               |
-| Integration model                 | Portal-first `/v1` API plus one-time editor redirects and HMAC webhooks         |
+| Integration model                 | Connector-neutral `/v1` API plus one-time editor redirects                      |
+| Signing engine                    | Pluggable domain port; Documenso v2 adapter preferred for production            |
+| Source license                    | AGPL-3.0-or-later with visible source offer                                     |
 | Completed real-estate retention   | Default seven years, pending final broker/counsel approval                      |
 | Specialized forms                 | I-9, W-4, tax, medical, notarization, KBA, and government ID excluded from v1   |
 | Public product features           | Signup, billing, marketplace forms, and external tenant administration excluded |
@@ -163,12 +166,12 @@ Authorization is deny-by-default. Every record and Blob object is workspace-scop
 
 ### 7.2 Assurance labels
 
-| Method           | Evidence description                                      |
-| ---------------- | --------------------------------------------------------- |
-| Email invitation | Secure invitation delivered to assigned recipient email   |
-| Access code      | Email invitation plus separately communicated access code |
-| Portal session   | Portal-authenticated actor delegated by a registered app  |
-| Admin account    | Authenticated standalone administrator account            |
+| Method              | Evidence description                                      |
+| ------------------- | --------------------------------------------------------- |
+| Email invitation    | Secure invitation delivered to assigned recipient email   |
+| Access code         | Email invitation plus separately communicated access code |
+| Integration session | Actor delegated by a registered connector application     |
+| Admin account       | Authenticated standalone administrator account            |
 
 The system never describes email-invitation possession as government identity verification. Shared email addresses are allowed with distinct recipient links, but the preparer receives a warning that one mailbox cannot distinguish natural persons.
 
@@ -176,14 +179,16 @@ The system never describes email-invitation possession as government identity ve
 
 ```mermaid
 flowchart TD
-    Staff[Agent, HR, Broker] --> Homix[Homix Portal]
-    Homix -->|REST API| API[E-sign API on Container Apps]
-    API -->|HMAC webhooks| Homix
-    Homix -->|One-time top-level redirect| Editor[React delegated editor]
+    Staff[Agent, HR, Broker] --> Source[Homix or another connected system]
+    Source -->|REST API| API[E-sign API on Container Apps]
+    API -->|Status API or webhooks| Source
+    Source -->|One-time top-level redirect| Editor[React delegated editor]
     Editor --> API
 
     Signer[External recipient] --> SignerPortal[React signer portal]
     SignerPortal --> API
+    API --> Engine[SigningEngine port]
+    Engine --> Documenso[Documenso API v2]
     Admin[Exceptional administrator] --> AdminIdP[Configured organization IdP]
     AdminIdP --> Editor
     Signer --> Invite[Secure email invitation]
@@ -217,22 +222,22 @@ flowchart TD
 - Service Bus queues and dead-letter queues.
 - Key Vault with managed identities and manifest-signing keys.
 - Communication Services Email with custom verified domain and SPF/DKIM.
-- Configured standalone administrator identity provider; normal Portal users require no eSign IdP login.
+- Configured standalone OIDC identity providers; delegated users require no separate eSign login.
 - Application Insights, Log Analytics, alert groups, and budgets.
 
 Development, staging, and production use separate identities, data stores, storage, Key Vaults, email resources, and app registrations. Staging identities cannot access production data or secrets.
 
 ## 9. Core Data Model
 
-| Aggregate          | Principal records                                                                                    |
-| ------------------ | ---------------------------------------------------------------------------------------------------- |
-| Access             | `workspaces`, `workspace_members`, `application_clients`, `portal_launch_sessions`, `staff_sessions` |
-| Templates          | `templates`, `template_versions`, `template_documents`, `recipient_roles`, `template_fields`         |
-| Business folders   | `transactions`                                                                                       |
-| Signing            | `envelopes`, `envelope_documents`, `recipients`, `routing_groups`, `field_values`                    |
-| Recipient evidence | `recipient_sessions`, `consent_records`, `signature_adoptions`                                       |
-| Audit and evidence | `audit_events`, `evidence_packages`, `retention_policies`, `legal_holds`                             |
-| Communications     | `email_deliveries`, `webhook_subscriptions`, `webhook_events`, `webhook_deliveries`                  |
+| Aggregate          | Principal records                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------- |
+| Access             | `workspaces`, `workspace_members`, `application_clients`, `integration_launch_sessions`, `staff_sessions` |
+| Templates          | `templates`, `template_versions`, `template_documents`, `recipient_roles`, `template_fields`              |
+| Business folders   | `transactions`                                                                                            |
+| Signing            | `envelopes`, `envelope_documents`, `recipients`, `routing_groups`, `field_values`                         |
+| Recipient evidence | `recipient_sessions`, `consent_records`, `signature_adoptions`                                            |
+| Audit and evidence | `audit_events`, `evidence_packages`, `retention_policies`, `legal_holds`                                  |
+| Communications     | `email_deliveries`, `webhook_subscriptions`, `webhook_events`, `webhook_deliveries`                       |
 
 Operational rows use optimistic concurrency. Evidence-critical events use append-only Ledger tables and a canonical previous-event hash. Database models are not exposed directly as API schemas.
 
@@ -404,10 +409,10 @@ Deliverables:
 
 - `/v1` OpenAPI contract.
 - Scoped clients, idempotency, external references, downloads.
-- Exact-return-URL Portal clients, five-minute one-time launches, bounded HttpOnly staff sessions, dual actor/application audit attribution, and Portal return navigation.
+- Exact-return-URL connector clients, stable connector keys, five-minute one-time launches, bounded HttpOnly staff sessions, dual actor/application audit attribution, and source-system return navigation.
 - Signed webhook delivery, retry, dead letter, replay, and reference consumer.
 
-Exit: Homix Portal creates, prepares, tracks, completes, and retrieves an envelope without a second staff login or duplicate effects under retries.
+Exit: Homix and a second synthetic connector both create delegated sessions without code changes; Documenso-mode lifecycle tests complete without duplicate effects under retries.
 
 ### Phase 6: Real-estate and HR packs
 
@@ -511,7 +516,7 @@ These decisions are required before production but do not block initial engineer
 - Named NY/NJ/CA broker/counsel approvers.
 - Final real-estate and HR retention matrix.
 - Whether non-sensitive completed real-estate PDFs are attached to email or always delivered by secure link.
-- Final Homix Portal staging/production return URLs and stable actor-subject format.
+- Final Homix and future connector staging/production return URLs and stable actor-subject formats.
 - Google Workspace versus Entra for the small exceptional administrator group (Google preferred).
 - Pilot and general-availability RPO/RTO.
 

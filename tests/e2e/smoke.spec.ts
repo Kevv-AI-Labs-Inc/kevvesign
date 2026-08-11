@@ -24,9 +24,8 @@ test('workspace administrator can issue, rotate, and revoke an application crede
   await page.goto('/settings');
   await expect(page.getByRole('heading', { name: 'Application credentials' })).toBeVisible();
   await page.getByLabel('Integration name').fill(clientName);
-  await page
-    .getByLabel('Allowed Portal return URL')
-    .fill('https://portal.homixliving.com/esign/return');
+  await page.getByLabel('Connector key').fill(`browser-${Date.now()}`);
+  await page.getByLabel('Allowed return URL').fill('https://crm.example.test/esign/return');
   await page.getByRole('button', { name: 'Issue credential' }).click();
   await expect(page.getByText('Copy this credential now')).toBeVisible();
   const clientRow = page.locator('.client-row').filter({ hasText: clientName });
@@ -38,38 +37,39 @@ test('workspace administrator can issue, rotate, and revoke an application crede
   await expect(clientRow.getByText('Revoked', { exact: true })).toBeVisible();
 });
 
-test('Homix Portal handoff opens the delegated workspace without another login', async ({
+test('a registered connector opens the delegated workspace without another login', async ({
   page,
   request,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== 'chromium', 'Portal handoff is exercised once.');
+  test.skip(testInfo.project.name !== 'chromium', 'Integration handoff is exercised once.');
   const clientResponse = await request.post('/v1/application-clients', {
     data: {
-      name: `Homix Portal browser ${Date.now()}`,
-      scopes: ['portal-sessions:create', 'envelopes:read'],
-      allowedReturnUrls: ['https://portal.homixliving.com/esign/return'],
+      name: `Acme CRM browser ${Date.now()}`,
+      connectorKey: `acme-browser-${Date.now()}`,
+      scopes: ['integration-sessions:create', 'envelopes:read'],
+      allowedReturnUrls: ['https://crm.example.test/esign/return'],
     },
   });
   expect(clientResponse.status()).toBe(201);
   const client = (await clientResponse.json()).data;
-  const launchResponse = await request.post('/v1/portal-sessions', {
+  const launchResponse = await request.post('/v1/integration-sessions', {
     headers: { 'x-esign-key': client.credential },
     data: {
       actor: {
-        subject: 'homix:browser-agent',
-        email: 'browser-agent@homixliving.com',
+        subject: 'acme:browser-agent',
+        email: 'browser-agent@example.test',
         displayName: 'Browser Agent',
         role: 'preparer',
       },
       intent: { kind: 'dashboard' },
-      returnUrl: 'https://portal.homixliving.com/esign/return',
+      returnUrl: 'https://crm.example.test/esign/return',
     },
   });
   expect(launchResponse.status()).toBe(201);
   const launch = new URL((await launchResponse.json()).data.launchUrl);
   await page.goto(`${launch.pathname}${launch.hash}`);
-  await expect(page.getByText(/via Homix Portal/i)).toBeVisible();
-  await expect(page.getByLabel('Return to Homix Portal')).toBeVisible();
+  await expect(page.getByText(/via Acme CRM/i)).toBeVisible();
+  await expect(page.getByLabel('Return to connected system')).toBeVisible();
   expect(await page.evaluate(() => document.cookie)).not.toContain('esign_staff=');
   expect(await page.evaluate(() => document.cookie)).toContain('esign_staff_csrf=');
 });

@@ -41,8 +41,9 @@ const config: AppConfig = {
   DATABASE_DRIVER: 'memory',
   EMAIL_DRIVER: 'local',
   SIGNING_DRIVER: 'local',
+  SIGNING_ENGINE_PROVIDER: 'native',
   SESSION_SECRET: 'test-secret-at-least-thirty-two-characters',
-  PORTAL_LAUNCH_TTL_SECONDS: 300,
+  LAUNCH_SESSION_TTL_SECONDS: 300,
   STAFF_SESSION_TTL_SECONDS: 3600,
   LOCAL_STAFF_EMAIL: 'admin@example.test',
   LOCAL_STAFF_ROLE: 'platform_admin',
@@ -50,6 +51,8 @@ const config: AppConfig = {
   AZURE_MANIFEST_KEY_NAME: 'esign-manifest',
   CLAMAV_HOST: '127.0.0.1',
   CLAMAV_PORT: 3310,
+  OIDC_PROVIDERS_JSON: '[]',
+  DOCUMENSO_REQUEST_TIMEOUT_MS: 15_000,
 };
 
 describe('one-email signing journey', () => {

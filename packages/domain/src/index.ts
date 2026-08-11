@@ -73,6 +73,64 @@ export interface FileScanner {
   scan(bytes: Uint8Array): Promise<void>;
 }
 
+export interface SigningEngineDocumentInput {
+  id: string;
+  name: string;
+  order: number;
+  bytes: Uint8Array;
+}
+
+export interface SigningEngineRecipient {
+  id: string | number;
+  email: string;
+  name: string;
+  role: string;
+  signingOrder?: number | null;
+  sendStatus?: string;
+  signingStatus?: string;
+  readStatus?: string;
+  signedAt?: string | null;
+  signingUrl?: string;
+}
+
+export interface SigningEngineItem {
+  id: string;
+  title: string;
+  order: number;
+}
+
+export interface SigningEngineEnvelope {
+  id: string;
+  externalId?: string | null;
+  status: string;
+  title: string;
+  completedAt?: string | null;
+  recipients: SigningEngineRecipient[];
+  items: SigningEngineItem[];
+}
+
+/**
+ * Anti-corruption boundary around the document-signing implementation.
+ * Business services depend on this port, never on Documenso-specific response shapes.
+ */
+export interface SigningEngine {
+  readonly provider: string;
+  health(): Promise<{ provider: string; reachable: boolean }>;
+  findEnvelopeByExternalId(externalId: string): Promise<SigningEngineEnvelope | undefined>;
+  createEnvelope(
+    envelope: Envelope,
+    documents: SigningEngineDocumentInput[],
+  ): Promise<SigningEngineEnvelope>;
+  distributeEnvelope(envelopeId: string): Promise<SigningEngineEnvelope>;
+  redistributeEnvelope(
+    envelopeId: string,
+    recipientId?: string | number,
+  ): Promise<SigningEngineEnvelope>;
+  cancelEnvelope(envelopeId: string): Promise<void>;
+  getEnvelope(envelopeId: string): Promise<SigningEngineEnvelope>;
+  downloadItem(itemId: string): Promise<Uint8Array>;
+}
+
 export function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -237,7 +295,11 @@ export function requirePermission(principal: StaffPrincipal, permission: string)
   if (!allowed.includes('*') && !allowed.includes(permission)) {
     throw new DomainError('forbidden', 'You do not have permission for this operation.', 403);
   }
-  if (principal.actorType === 'application' || principal.actorType === 'portal') {
+  if (
+    principal.actorType === 'application' ||
+    principal.actorType === 'integration' ||
+    principal.actorType === 'portal'
+  ) {
     const requiredScopes = delegatedPermissionScopes[permission] ?? [];
     const scopes = principal.delegatedScopes ?? [];
     if (requiredScopes.length === 0 || !requiredScopes.some((scope) => scopes.includes(scope))) {
@@ -375,7 +437,7 @@ export function seedState(now = new Date().toISOString()): PlatformState {
     transactions: [],
     envelopes: [],
     recipientSessions: [],
-    portalLaunchSessions: [],
+    integrationLaunchSessions: [],
     staffSessions: [],
     auditEvents: [],
     evidencePackages: [],
