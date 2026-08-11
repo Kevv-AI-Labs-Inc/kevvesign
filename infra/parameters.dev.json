@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "prefix": { "value": "clroom" },
+    "environment": { "value": "dev" },
+    "location": { "value": "eastus2" },
+    "webImage": { "value": "example.azurecr.io/esign-web:bootstrap" },
+    "apiImage": { "value": "example.azurecr.io/esign-api:bootstrap" },
+    "pdfFinalizerImage": { "value": "example.azurecr.io/esign-pdf:bootstrap" },
+    "publicBaseUrl": { "value": "https://esign-dev.example.com" },
+    "entraTenantId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "entraClientId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "acsEmailSender": { "value": "DoNotReply@example.com" }
+  }
+}

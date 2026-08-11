@@ -1,0 +1,19 @@
+{
+  "name": "@esign/workflows",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "func start",
+    "build": "tsup src/index.ts --format esm --platform node --target node22 --clean --sourcemap",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.7.2",
+    "durable-functions": "^3.3.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0"
+  }
+}

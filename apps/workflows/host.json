@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "extensions": {
+    "durableTask": { "hubName": "EsignWorkflows", "maxConcurrentActivityFunctions": 20 },
+    "serviceBus": {
+      "prefetchCount": 0,
+      "messageHandlerOptions": { "maxConcurrentCalls": 8, "autoComplete": true }
+    }
+  },
+  "logging": {
+    "applicationInsights": { "samplingSettings": { "isEnabled": true, "excludedTypes": "Request" } }
+  }
+}

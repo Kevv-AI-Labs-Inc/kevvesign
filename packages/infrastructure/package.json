@@ -1,0 +1,31 @@
+{
+  "name": "@esign/infrastructure",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@azure/communication-email": "^1.0.0",
+    "@azure/identity": "^4.11.1",
+    "@azure/keyvault-keys": "^4.10.0",
+    "@azure/service-bus": "^7.9.5",
+    "@azure/storage-blob": "^12.28.0",
+    "@esign/contracts": "workspace:*",
+    "@esign/domain": "workspace:*",
+    "mssql": "^11.0.1",
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.7",
+    "tsup": "^8.5.0"
+  }
+}
