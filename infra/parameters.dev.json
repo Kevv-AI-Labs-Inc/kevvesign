@@ -28,7 +28,7 @@
     "entraTenantId": { "value": "a12b7c3d-235c-4f02-97d5-e2b20ba5706e" },
     "entraClientId": { "value": "f5274aa3-d85f-49ec-9f17-d0a47aa107d3" },
     "acsEmailSender": {
-      "value": "DoNotReply@acfe4931-2162-4f79-96c9-d06edf9b63b8.azurecomm.net"
+      "value": "esign@esign.kevv.ai"
     }
   }
 }

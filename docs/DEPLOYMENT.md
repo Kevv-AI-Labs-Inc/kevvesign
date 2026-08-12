@@ -2,13 +2,13 @@
 
 The development environment is deployed in the `Azure subscription free` subscription under resource group `rg-kevvesign-dev`.
 
-- Public application: `https://ca-web-kevvesign-dev.whitepond-3b391332.eastus2.azurecontainerapps.io`
+- Public application: `https://esign.kevv.ai`
 - Web, API, jobs, storage, messaging, email, Key Vault, and registry: East US 2
 - Azure SQL: Central US because this subscription currently restricts SQL creation in East US and East US 2
 - Staff entry: delegated connector session; Homix is the first connector and ordinary users do not create an eSign login
 - Recipient entry: one-time signing link; no recipient account
 
-This is a development environment, not a legal or production release. It still needs a custom domain, verified email domain, final retention policy, production network isolation, monitoring/alerts, backup/recovery review, and NY/NJ/CA counsel/broker acceptance before real transactions or employee records are used.
+This is a development environment, not a legal or production release. Its custom application and email domains are configured, but it still needs a final retention policy, production network isolation, monitoring/alerts, backup/recovery review, and NY/NJ/CA counsel/broker acceptance before real transactions or employee records are used.
 
 ## Deployed resources
 
@@ -18,7 +18,7 @@ This is a development environment, not a legal or production release. It still n
 - Storage: OAuth-only access, no public blobs, versioning/change feed, and delete retention
 - Key Vault: RBAC, purge protection, RSA manifest signing key, application secrets
 - Azure Container Registry: Basic, local admin disabled, managed-identity image pulls
-- Azure Communication Services Email: Azure-managed development sender
+- Azure Communication Services Email: verified `esign.kevv.ai` sender domain with delivery/status diagnostics
 - Documenso dev: pinned `documenso/documenso:v2.11.0` container with a dedicated managed identity
 - Documenso PostgreSQL: `pg-kevvesign-documenso-dev` in Central US, version 16, seven-day dev backups
 - Log Analytics and Application Insights
@@ -94,7 +94,9 @@ Documenso migrations require the PostgreSQL extensions `pgcrypto` and `pg_trgm`.
 
 Keep `signingEngineProvider=native` until a Documenso administrator has created an API token and registered the Kevv eSign webhook. For the cutover, pass `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets in Key Vault and exposes them to the API through managed-identity secret references. Register the API webhook endpoint and shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
 
-The bound hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. Their Cloudflare CNAME records remain DNS-only so Azure Container Apps can issue and renew managed certificates directly. TXT records named `asuid.esign` and `asuid.documenso` contain the Container Apps environment custom-domain verification ID. Keep these records in place while the custom domains are active.
+The bound hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. `documenso.kevv.ai` remains a DNS-only CNAME to its Container App hostname. `esign.kevv.ai` is a DNS-only A record to the Container Apps environment static IP so the same DNS name can also carry Azure Communication Services domain-verification and SPF TXT records. TXT records named `asuid.esign` and `asuid.documenso` contain the Container Apps environment custom-domain verification ID. Keep these records in place while the custom domains are active.
+
+Azure Communication Services Email uses the verified customer-managed domain `esign.kevv.ai`. Its sender username is `Kevv eSign <esign@esign.kevv.ai>`. Keep the domain-verification TXT record, SPF TXT record, and both Azure DKIM CNAME records published in Cloudflare. The Documenso organisation default Reply-To is `support@kevv.ai` for recipient-facing document emails. Documenso v2.11 does not attach a configurable Reply-To header to internal account emails such as signup confirmation and password reset; those emails still use the branded From address.
 
 ## Release checks completed
 

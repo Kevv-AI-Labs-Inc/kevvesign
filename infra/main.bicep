@@ -54,7 +54,9 @@ param documensoBaseUrl string = ''
 param documensoApiToken string = ''
 @secure()
 param documensoWebhookSecret string = ''
-@description('Optional sender override. Leave blank to use the Azure-managed email domain sender.')
+@description('Customer-managed Azure Communication Services Email domain.')
+param acsEmailDomainName string = 'esign.kevv.ai'
+@description('Optional sender override. Leave blank to use esign@ on the customer-managed email domain.')
 param acsEmailSender string = ''
 
 @secure()
@@ -242,6 +244,26 @@ resource emailDomain 'Microsoft.Communication/emailServices/domains@2025-09-01' 
   }
 }
 
+resource customEmailDomain 'Microsoft.Communication/emailServices/domains@2025-09-01' = {
+  parent: emailService
+  name: acsEmailDomainName
+  location: 'global'
+  tags: tags
+  properties: {
+    domainManagement: 'CustomerManaged'
+    userEngagementTracking: 'Disabled'
+  }
+}
+
+resource esignSenderUsername 'Microsoft.Communication/emailServices/domains/senderUsernames@2025-09-01' = {
+  parent: customEmailDomain
+  name: 'esign'
+  properties: {
+    username: 'esign'
+    displayName: 'Kevv eSign'
+  }
+}
+
 resource communicationService 'Microsoft.Communication/communicationServices@2025-09-01' = {
   name: take('acs-${stem}-${uniqueString(resourceGroup().id)}', 63)
   location: 'global'
@@ -249,14 +271,35 @@ resource communicationService 'Microsoft.Communication/communicationServices@202
   properties: {
     dataLocation: 'United States'
     disableLocalAuth: false
-    linkedDomains: [emailDomain.id]
+    linkedDomains: [
+      emailDomain.id
+      customEmailDomain.id
+    ]
     publicNetworkAccess: 'Enabled'
   }
 }
 
 var resolvedAcsEmailSender = empty(acsEmailSender)
-  ? 'DoNotReply@${emailDomain.properties.mailFromSenderDomain}'
+  ? 'esign@${acsEmailDomainName}'
   : acsEmailSender
+
+resource communicationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'acs-email-delivery-logs'
+  scope: communicationService
+  properties: {
+    workspaceId: logAnalytics.id
+    logs: [
+      {
+        category: 'EmailSendMailOperational'
+        enabled: true
+      }
+      {
+        category: 'EmailStatusUpdateOperational'
+        enabled: true
+      }
+    ]
+  }
+}
 
 resource manifestKey 'Microsoft.KeyVault/vaults/keys@2023-07-01' = {
   parent: keyVault

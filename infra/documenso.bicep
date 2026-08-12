@@ -28,7 +28,7 @@ param image string = 'documenso/documenso:v2.11.0'
 param allowedSignupDomains string = 'homixny.com'
 
 @description('Sender address already provisioned in Azure Communication Services Email.')
-param smtpFromAddress string
+param smtpFromAddress string = 'esign@esign.kevv.ai'
 
 @description('Azure Communication Services SMTP username.')
 param smtpUsername string = 'documenso-dev'
