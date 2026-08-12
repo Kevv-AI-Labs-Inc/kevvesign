@@ -9,8 +9,17 @@ param containerAppsEnvironmentName string = 'cae-kevvesign-dev'
 @description('Existing Key Vault name containing Documenso secrets.')
 param keyVaultName string = 'kv-kevvesign-dev-lxgas2'
 
+@description('Existing Azure Database for PostgreSQL flexible server used by Documenso.')
+param postgresServerName string = 'pg-kevvesign-documenso-dev'
+
 @description('Public HTTPS URL used in Documenso links and callbacks.')
 param publicWebappUrl string
+
+@description('Custom hostname already validated for the Documenso Container App.')
+param customHostname string = 'documenso.kevv.ai'
+
+@description('Existing Azure managed certificate bound to the custom hostname.')
+param managedCertificateName string = 'mc-cae-kevvesign--documenso-kevv-a-7104'
 
 @description('Pinned Documenso image. Upgrade intentionally after backup and validation.')
 param image string = 'documenso/documenso:v2.11.0'
@@ -35,8 +44,26 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
   name: containerAppsEnvironmentName
 }
 
+resource managedCertificate 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' existing = {
+  parent: containerAppsEnvironment
+  name: managedCertificateName
+}
+
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
+}
+
+resource postgresServer 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' existing = {
+  name: postgresServerName
+}
+
+resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
+  parent: postgresServer
+  name: 'azure.extensions'
+  properties: {
+    source: 'user-override'
+    value: 'pgcrypto,pg_trgm'
+  }
 }
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -83,6 +110,13 @@ resource documenso 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 3000
         transport: 'http'
         allowInsecure: false
+        customDomains: [
+          {
+            name: customHostname
+            bindingType: 'SniEnabled'
+            certificateId: managedCertificate.id
+          }
+        ]
       }
       secrets: [
         {
@@ -127,6 +161,11 @@ resource documenso 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'documenso'
           image: image
+          command: ['/bin/sh']
+          args: [
+            '-ec'
+            'cd /app/apps/remix && . ./start.sh'
+          ]
           env: [
             { name: 'PORT', value: '3000' }
             { name: 'NEXTAUTH_SECRET', secretRef: 'nextauth-secret' }
@@ -204,7 +243,7 @@ resource documenso 'Microsoft.App/containerApps@2024-03-01' = {
       }
     }
   }
-  dependsOn: [keyVaultSecretsUser]
+  dependsOn: [keyVaultSecretsUser, postgresExtensions]
 }
 
 output appName string = documenso.name
