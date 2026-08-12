@@ -19,6 +19,8 @@ This is a development environment, not a legal or production release. It still n
 - Key Vault: RBAC, purge protection, RSA manifest signing key, application secrets
 - Azure Container Registry: Basic, local admin disabled, managed-identity image pulls
 - Azure Communication Services Email: Azure-managed development sender
+- Documenso dev: pinned `documenso/documenso:v2.11.0` container with a dedicated managed identity
+- Documenso PostgreSQL: `pg-kevvesign-documenso-dev` in Central US, version 16, seven-day dev backups
 - Log Analytics and Application Insights
 
 Current image references are recorded in `infra/parameters.dev.json`. The Bicep template remains the source of truth for resource configuration; deployment-only credentials remain in Key Vault and are never stored in a parameters file.
@@ -86,7 +88,11 @@ Configure standalone access with either the paired legacy Entra parameters or `o
 
 ## Documenso cutover
 
-Keep `signingEngineProvider=native` until a self-hosted Documenso instance is available. For the cutover, pass `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets in Key Vault and exposes them to the API through managed-identity secret references. Register the API webhook endpoint and shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
+The Documenso dev service is deployed independently from the Kevv eSign API. Its repeatable definition is `infra/documenso.bicep`; all credentials, encryption keys, and the development signing certificate are Key Vault references resolved through `id-documenso-kevvesign-dev`. The current temporary URL is `https://ca-documenso-kevvesign-dev.whitepond-3b391332.eastus2.azurecontainerapps.io`. Account creation is limited to `homixny.com`, Google/Microsoft/OIDC sign-in is disabled for this initial bootstrap, and anonymous telemetry is disabled.
+
+Keep `signingEngineProvider=native` until a Documenso administrator has created an API token and registered the Kevv eSign webhook. For the cutover, pass `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets in Key Vault and exposes them to the API through managed-identity secret references. Register the API webhook endpoint and shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
+
+The intended hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. Before Azure can issue managed certificates, create DNS-only CNAME records pointing each hostname to its Container Apps FQDN and TXT records named `asuid.esign` and `asuid.documenso` with the Container Apps environment custom-domain verification ID. Bind the hostnames in Azure, wait for certificates to become ready, then redeploy both applications with their final public URLs. Do not proxy the records through Cloudflare until Azure has validated and issued the certificates.
 
 ## Release checks completed
 
@@ -97,6 +103,7 @@ Keep `signingEngineProvider=native` until a self-hosted Documenso instance is av
 - One-time launch ticket replay: 410
 - Integration logout and post-logout access: 200/401
 - API and ClamAV containers: ready with zero restarts after final rollout
+- Documenso public and internal `/api/health`: 200 with database and certificate checks both `ok`
 - SQL temporary operator firewall rule: removed
 
-The synthetic integration session was logged out after verification. No licensed real-estate form, customer document, recipient email, or employee record was used. Documenso mode has not yet been deployed to this development environment.
+The synthetic integration session was logged out after verification. No licensed real-estate form, customer document, recipient email, or employee record was used. Documenso is deployed as a standalone dev service, while Kevv eSign remains in native signing-engine mode until API/webhook configuration and an end-to-end synthetic signing test are complete.
