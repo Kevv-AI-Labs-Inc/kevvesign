@@ -88,11 +88,11 @@ Configure standalone access with either the paired legacy Entra parameters or `o
 
 ## Documenso cutover
 
-The Documenso dev service is deployed independently from the Kevv eSign API. Its repeatable definition is `infra/documenso.bicep`; all credentials, encryption keys, and the development signing certificate are Key Vault references resolved through `id-documenso-kevvesign-dev`. The current temporary URL is `https://ca-documenso-kevvesign-dev.whitepond-3b391332.eastus2.azurecontainerapps.io`. Account creation is limited to `homixny.com`, Google/Microsoft/OIDC sign-in is disabled for this initial bootstrap, and anonymous telemetry is disabled.
+The Documenso dev service is deployed independently from the Kevv eSign API. Its repeatable definition is `infra/documenso.bicep`; all credentials, encryption keys, and the development signing certificate are Key Vault references resolved through `id-documenso-kevvesign-dev`. Its public URL is `https://documenso.kevv.ai`. Account creation is limited to `homixny.com`, Google/Microsoft/OIDC sign-in is disabled for this initial bootstrap, and anonymous telemetry is disabled.
 
 Keep `signingEngineProvider=native` until a Documenso administrator has created an API token and registered the Kevv eSign webhook. For the cutover, pass `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets in Key Vault and exposes them to the API through managed-identity secret references. Register the API webhook endpoint and shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
 
-The intended hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. Before Azure can issue managed certificates, create DNS-only CNAME records pointing each hostname to its Container Apps FQDN and TXT records named `asuid.esign` and `asuid.documenso` with the Container Apps environment custom-domain verification ID. Bind the hostnames in Azure, wait for certificates to become ready, then redeploy both applications with their final public URLs. Do not proxy the records through Cloudflare until Azure has validated and issued the certificates.
+The bound hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. Their Cloudflare CNAME records remain DNS-only so Azure Container Apps can issue and renew managed certificates directly. TXT records named `asuid.esign` and `asuid.documenso` contain the Container Apps environment custom-domain verification ID. Keep these records in place while the custom domains are active.
 
 ## Release checks completed
 

@@ -23,7 +23,7 @@
       "value": "acrkevvesigndev4k23mbcal6c76.azurecr.io/esign-pdf:20260811.2"
     },
     "publicBaseUrl": {
-      "value": "https://ca-web-kevvesign-dev.whitepond-3b391332.eastus2.azurecontainerapps.io"
+      "value": "https://esign.kevv.ai"
     },
     "entraTenantId": { "value": "a12b7c3d-235c-4f02-97d5-e2b20ba5706e" },
     "entraClientId": { "value": "f5274aa3-d85f-49ec-9f17-d0a47aa107d3" },
