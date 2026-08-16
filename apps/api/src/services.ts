@@ -1172,6 +1172,22 @@ export class ESignService {
         );
       }
       const roleMap = new Map(version.roles.map((role) => [role.id, role]));
+      const suppliedRoleIds = input.recipients.map((recipient) => recipient.roleId);
+      if (new Set(suppliedRoleIds).size !== suppliedRoleIds.length) {
+        throw new DomainError(
+          'duplicate_role',
+          'Each template role must be assigned to exactly one recipient.',
+          422,
+        );
+      }
+      const missingRoles = version.roles.filter((role) => !suppliedRoleIds.includes(role.id));
+      if (missingRoles.length > 0) {
+        throw new DomainError(
+          'missing_role',
+          'Every template role must be assigned to a recipient.',
+          422,
+        );
+      }
       const mergeValues = applyMergeData(version.fields, input.mergeData);
       const recipients: Recipient[] = input.recipients.map((candidate) => {
         const role = roleMap.get(candidate.roleId);

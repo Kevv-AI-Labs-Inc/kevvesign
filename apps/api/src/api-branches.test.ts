@@ -493,6 +493,18 @@ describe('staff API and signing branches', () => {
       (await server.inject({ method: 'POST', url: '/v1/envelopes', payload: envelopeInput }))
         .statusCode,
     ).toBe(400);
+    const duplicateRoleResponse = await server.inject({
+      method: 'POST',
+      url: '/v1/envelopes',
+      headers: { 'idempotency-key': 'duplicate-envelope-role' },
+      payload: {
+        ...envelopeInput,
+        externalReference: 'OFFER-DUPLICATE-ROLE',
+        recipients: [envelopeInput.recipients[0], envelopeInput.recipients[0]],
+      },
+    });
+    expect(duplicateRoleResponse.statusCode).toBe(422);
+    expect(duplicateRoleResponse.json().error.code).toBe('duplicate_role');
     const createEnvelopeResponse = await server.inject({
       method: 'POST',
       url: '/v1/envelopes',
