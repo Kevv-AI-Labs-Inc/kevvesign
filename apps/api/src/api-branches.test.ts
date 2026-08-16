@@ -30,6 +30,7 @@ const baseConfig: AppConfig = {
   EMAIL_DRIVER: 'local',
   SIGNING_DRIVER: 'local',
   SIGNING_ENGINE_PROVIDER: 'native',
+  SIGNING_PROVIDER_CONNECTION_ID: 'default-signing-provider',
   SESSION_SECRET: 'test-secret-at-least-thirty-two-characters',
   LAUNCH_SESSION_TTL_SECONDS: 300,
   STAFF_SESSION_TTL_SECONDS: 3600,
@@ -188,6 +189,7 @@ describe('staff API and signing branches', () => {
           payload: {
             name: 'Expired integration',
             scopes: ['templates:read'],
+            businessDomains: ['REAL_ESTATE'],
             expiresAt: '2020-01-01T00:00:00.000Z',
           },
         })
@@ -199,6 +201,7 @@ describe('staff API and signing branches', () => {
       payload: {
         name: 'Listing application',
         scopes: ['templates:read', 'envelopes:read'],
+        businessDomains: ['REAL_ESTATE'],
       },
     });
     expect(clientResponse.statusCode).toBe(201);
@@ -426,7 +429,11 @@ describe('staff API and signing branches', () => {
     const publishedReaderResponse = await server.inject({
       method: 'POST',
       url: '/v1/application-clients',
-      payload: { name: 'Published template reader', scopes: ['templates:read'] },
+      payload: {
+        name: 'Published template reader',
+        scopes: ['templates:read'],
+        businessDomains: ['REAL_ESTATE'],
+      },
     });
     const publishedReader = publishedReaderResponse.json().data.credential;
     const applicationTemplate = (
@@ -486,6 +493,18 @@ describe('staff API and signing branches', () => {
       (await server.inject({ method: 'POST', url: '/v1/envelopes', payload: envelopeInput }))
         .statusCode,
     ).toBe(400);
+    const duplicateRoleResponse = await server.inject({
+      method: 'POST',
+      url: '/v1/envelopes',
+      headers: { 'idempotency-key': 'duplicate-envelope-role' },
+      payload: {
+        ...envelopeInput,
+        externalReference: 'OFFER-DUPLICATE-ROLE',
+        recipients: [envelopeInput.recipients[0], envelopeInput.recipients[0]],
+      },
+    });
+    expect(duplicateRoleResponse.statusCode).toBe(422);
+    expect(duplicateRoleResponse.json().error.code).toBe('duplicate_role');
     const createEnvelopeResponse = await server.inject({
       method: 'POST',
       url: '/v1/envelopes',

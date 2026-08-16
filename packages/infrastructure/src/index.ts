@@ -48,7 +48,17 @@ function assertSafeObjectKey(key: string): string {
 function parsePlatformState(value: string): PlatformState {
   const state = JSON.parse(value) as PlatformState;
   state.applicationClients ??= [];
-  for (const client of state.applicationClients) client.allowedReturnUrls ??= [];
+  for (const client of state.applicationClients) {
+    client.allowedReturnUrls ??= [];
+    // Legacy credentials are intentionally fail-closed until an administrator assigns domains.
+    if (
+      !Array.isArray(client.businessDomains) ||
+      client.businessDomains.length !== 1 ||
+      !['HR', 'REAL_ESTATE'].includes(client.businessDomains[0] ?? '')
+    ) {
+      client.businessDomains = [];
+    }
+  }
   state.integrationLaunchSessions ??= state.portalLaunchSessions ?? [];
   delete state.portalLaunchSessions;
   state.staffSessions ??= [];

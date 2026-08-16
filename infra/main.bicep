@@ -48,6 +48,8 @@ param entraClientId string = ''
 param oidcProvidersJson string = '[]'
 @allowed(['native', 'documenso'])
 param signingEngineProvider string = 'native'
+@description('Stable non-secret ID used to map workspaces and envelopes to this signing provider connection.')
+param signingProviderConnectionId string = 'default-signing-provider'
 @description('Documenso origin or API v2 base URL. Required when signingEngineProvider is documenso.')
 param documensoBaseUrl string = ''
 @secure()
@@ -482,6 +484,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ENTRA_CLIENT_ID', value: entraClientId }
             { name: 'OIDC_PROVIDERS_JSON', value: oidcProvidersJson }
             { name: 'SIGNING_ENGINE_PROVIDER', value: signingEngineProvider }
+            { name: 'SIGNING_PROVIDER_CONNECTION_ID', value: signingProviderConnectionId }
             { name: 'ACS_EMAIL_CONNECTION_STRING', secretRef: 'acs-email' }
             { name: 'ACS_EMAIL_SENDER', value: resolvedAcsEmailSender }
             { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Integrated;Client Id=${workloadIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }

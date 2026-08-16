@@ -42,6 +42,7 @@ const config: AppConfig = {
   EMAIL_DRIVER: 'local',
   SIGNING_DRIVER: 'local',
   SIGNING_ENGINE_PROVIDER: 'native',
+  SIGNING_PROVIDER_CONNECTION_ID: 'default-signing-provider',
   SESSION_SECRET: 'test-secret-at-least-thirty-two-characters',
   LAUNCH_SESSION_TTL_SECONDS: 300,
   STAFF_SESSION_TTL_SECONDS: 3600,

@@ -2,8 +2,16 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type {
+  ApplicationClient,
+  BusinessDomain,
+  Envelope,
+  PlatformState,
+  Template,
+  Transaction,
+} from '@esign/contracts';
 import type { EmailMessage, EmailPort } from '@esign/domain';
-import { InMemoryRepository, seedState } from '@esign/domain';
+import { InMemoryRepository, seedState, sha256 } from '@esign/domain';
 import { HmacManifestSigner, LocalFileScanner, LocalObjectStore } from '@esign/infrastructure';
 import type { AppConfig } from './config';
 import { buildServer } from './server';
@@ -25,6 +33,7 @@ const config: AppConfig = {
   EMAIL_DRIVER: 'local',
   SIGNING_DRIVER: 'local',
   SIGNING_ENGINE_PROVIDER: 'native',
+  SIGNING_PROVIDER_CONNECTION_ID: 'default-signing-provider',
   SESSION_SECRET: 'test-secret-at-least-thirty-two-characters',
   LAUNCH_SESSION_TTL_SECONDS: 300,
   STAFF_SESSION_TTL_SECONDS: 3600,
@@ -40,6 +49,102 @@ const config: AppConfig = {
 
 function cookies(response: { cookies: Array<{ name: string; value: string }> }): string {
   return response.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+}
+
+const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
+const FIXTURE_TIME = '2026-08-12T12:00:00.000Z';
+
+function publishedTemplate(domain: BusinessDomain, name: string): Template {
+  const id = crypto.randomUUID();
+  const versionId = crypto.randomUUID();
+  return {
+    id,
+    workspaceId: WORKSPACE_ID,
+    name,
+    createdAt: FIXTURE_TIME,
+    updatedAt: FIXTURE_TIME,
+    activeVersionId: versionId,
+    versions: [
+      {
+        id: versionId,
+        version: 1,
+        status: 'PUBLISHED',
+        createdAt: FIXTURE_TIME,
+        publishedAt: FIXTURE_TIME,
+        sourceName: `${name} fixture`,
+        licenseOwner: 'Test Brokerage',
+        edition: '1',
+        effectiveDate: '2026-08-12',
+        jurisdiction: domain === 'HR' ? 'NONE' : 'NY',
+        businessDomain: domain,
+        approvalRequired: false,
+        retentionPolicyId: domain === 'HR' ? 'hr-7y' : 'real-estate-7y',
+        documents: [],
+        roles: [],
+        fields: [],
+      },
+    ],
+  };
+}
+
+function preparedEnvelope(template: Template, domain: BusinessDomain, subject: string): Envelope {
+  return {
+    id: crypto.randomUUID(),
+    workspaceId: WORKSPACE_ID,
+    templateId: template.id,
+    templateVersionId: template.activeVersionId!,
+    subject,
+    message: 'Synthetic domain-isolation fixture.',
+    status: 'PREPARED',
+    jurisdiction: domain === 'HR' ? 'NONE' : 'NY',
+    businessDomain: domain,
+    approvalRequired: false,
+    expiresAt: '2027-08-12T12:00:00.000Z',
+    createdAt: FIXTURE_TIME,
+    updatedAt: FIXTURE_TIME,
+    version: 1,
+    documents: [],
+    fields: [],
+    recipients: [],
+    retentionPolicyId: domain === 'HR' ? 'hr-7y' : 'real-estate-7y',
+  };
+}
+
+function transaction(domain: BusinessDomain, name: string): Transaction {
+  return {
+    id: crypto.randomUUID(),
+    workspaceId: WORKSPACE_ID,
+    kind: domain === 'HR' ? 'HR_PACKET' : 'PROPERTY',
+    name,
+    jurisdiction: domain === 'HR' ? 'NONE' : 'NY',
+    envelopeIds: [],
+    createdAt: FIXTURE_TIME,
+  };
+}
+
+function domainFixtureState(): {
+  state: PlatformState;
+  hrTemplate: Template;
+  realEstateTemplate: Template;
+  hrEnvelope: Envelope;
+  realEstateEnvelope: Envelope;
+} {
+  const state = seedState(FIXTURE_TIME);
+  const hrTemplate = publishedTemplate('HR', 'Employee onboarding packet');
+  const realEstateTemplate = publishedTemplate('REAL_ESTATE', 'NY listing agreement');
+  const hrEnvelope = preparedEnvelope(hrTemplate, 'HR', 'Employee onboarding');
+  const realEstateEnvelope = preparedEnvelope(
+    realEstateTemplate,
+    'REAL_ESTATE',
+    'Listing agreement',
+  );
+  state.templates.push(hrTemplate, realEstateTemplate);
+  state.envelopes.push(hrEnvelope, realEstateEnvelope);
+  state.transactions.push(
+    transaction('HR', 'Existing employee packet'),
+    transaction('REAL_ESTATE', 'Existing listing transaction'),
+  );
+  return { state, hrTemplate, realEstateTemplate, hrEnvelope, realEstateEnvelope };
 }
 
 describe('pluggable delegated staff access', () => {
@@ -70,6 +175,7 @@ describe('pluggable delegated staff access', () => {
           'transactions:write',
           'envelopes:read',
         ],
+        businessDomains: ['REAL_ESTATE'],
         allowedReturnUrls: ['https://crm.example.test/esign/return'],
       },
     });
@@ -84,6 +190,7 @@ describe('pluggable delegated staff access', () => {
         name: 'Duplicate CRM connector',
         connectorKey: 'acme-crm',
         scopes: ['integration-sessions:create'],
+        businessDomains: ['REAL_ESTATE'],
         allowedReturnUrls: ['https://other.example.test/esign/return'],
       },
     });
@@ -227,6 +334,7 @@ describe('pluggable delegated staff access', () => {
         payload: {
           name: 'Revocable Portal',
           scopes: ['portal-sessions:create'],
+          businessDomains: ['HR'],
           allowedReturnUrls: ['https://portal.homixliving.com/esign/return'],
         },
       })
@@ -316,5 +424,463 @@ describe('pluggable delegated staff access', () => {
       (await server.inject({ method: 'GET', url: '/v1/me', headers: { cookie: firstCookie } }))
         .statusCode,
     ).toBe(401);
+  });
+
+  it('strictly isolates HR and real-estate credentials before and after delegation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-domain-isolation-'));
+    const fixtures = domainFixtureState();
+    const repository = new InMemoryRepository(fixtures.state);
+    const server = await buildServer(config, {
+      repository,
+      objects: new LocalObjectStore(path.join(root, 'objects')),
+      email: new NoopEmail(),
+      signer: new HmacManifestSigner(config.SESSION_SECRET),
+      scanner: new LocalFileScanner(),
+    });
+    servers.push(server);
+
+    const scopes = [
+      'templates:read',
+      'transactions:read',
+      'transactions:write',
+      'envelopes:read',
+      'envelopes:write',
+      'envelopes:send',
+      'evidence:read',
+      'integration-sessions:create',
+    ];
+    const returnUrl = 'https://agents.homixny.com/esign/return';
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/application-clients',
+          payload: { name: 'Unassigned client', scopes },
+        })
+      ).statusCode,
+    ).toBe(422);
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/application-clients',
+          payload: {
+            name: 'Over-broad client',
+            scopes,
+            businessDomains: ['HR', 'REAL_ESTATE'],
+          },
+        })
+      ).statusCode,
+    ).toBe(422);
+    const issueCredential = async (name: string, domain: BusinessDomain) => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/v1/application-clients',
+        payload: {
+          name,
+          connectorKey: `homix-${domain.toLowerCase().replace('_', '-')}`,
+          scopes,
+          businessDomains: [domain],
+          allowedReturnUrls: [returnUrl],
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json().data.client.businessDomains).toEqual([domain]);
+      return response.json().data as {
+        credential: string;
+        client: { id: string; businessDomains: BusinessDomain[] };
+      };
+    };
+    const hr = await issueCredential('Homix HR', 'HR');
+    const realEstate = await issueCredential('Homix Real Estate', 'REAL_ESTATE');
+
+    const listIds = async (url: string, credential: string) => {
+      const response = await server.inject({
+        method: 'GET',
+        url,
+        headers: { 'x-esign-key': credential },
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json().data.map((item: { id: string }) => item.id) as string[];
+    };
+    expect(await listIds('/v1/templates', hr.credential)).toEqual([fixtures.hrTemplate.id]);
+    expect(await listIds('/v1/templates', realEstate.credential)).toEqual([
+      fixtures.realEstateTemplate.id,
+    ]);
+    expect(await listIds('/v1/transactions', hr.credential)).toHaveLength(1);
+    expect(await listIds('/v1/transactions', realEstate.credential)).toHaveLength(1);
+    expect(await listIds('/v1/envelopes', hr.credential)).toEqual([fixtures.hrEnvelope.id]);
+    expect(await listIds('/v1/envelopes', realEstate.credential)).toEqual([
+      fixtures.realEstateEnvelope.id,
+    ]);
+
+    for (const [credential, foreignTemplateId, foreignEnvelopeId] of [
+      [hr.credential, fixtures.realEstateTemplate.id, fixtures.realEstateEnvelope.id],
+      [realEstate.credential, fixtures.hrTemplate.id, fixtures.hrEnvelope.id],
+    ]) {
+      expect(
+        (
+          await server.inject({
+            method: 'GET',
+            url: `/v1/templates/${foreignTemplateId}`,
+            headers: { 'x-esign-key': credential },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await server.inject({
+            method: 'POST',
+            url: `/v1/envelopes/${foreignEnvelopeId}/send`,
+            headers: { 'x-esign-key': credential, 'idempotency-key': crypto.randomUUID() },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await server.inject({
+            method: 'POST',
+            url: `/v1/envelopes/${foreignEnvelopeId}/void`,
+            headers: { 'x-esign-key': credential },
+            payload: { reason: 'Cross-domain request must remain hidden.' },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await server.inject({
+            method: 'POST',
+            url: `/v1/envelopes/${foreignEnvelopeId}/recipients/${crypto.randomUUID()}/resend`,
+            headers: { 'x-esign-key': credential },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await server.inject({
+            method: 'GET',
+            url: `/v1/envelopes/${foreignEnvelopeId}/evidence`,
+            headers: { 'x-esign-key': credential },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await server.inject({
+            method: 'GET',
+            url: `/v1/envelopes/${foreignEnvelopeId}`,
+            headers: { 'x-esign-key': credential },
+          })
+        ).statusCode,
+      ).toBe(404);
+    }
+
+    const hrCrossCreate = await server.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { 'x-esign-key': hr.credential },
+      payload: { kind: 'PROPERTY', name: 'Blocked listing', jurisdiction: 'NY' },
+    });
+    expect(hrCrossCreate.statusCode).toBe(403);
+    expect(hrCrossCreate.json().error.code).toBe('business_domain_forbidden');
+    const realEstateCrossCreate = await server.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { 'x-esign-key': realEstate.credential },
+      payload: { kind: 'HR_PACKET', name: 'Blocked onboarding', jurisdiction: 'NONE' },
+    });
+    expect(realEstateCrossCreate.statusCode).toBe(403);
+    expect(realEstateCrossCreate.json().error.code).toBe('business_domain_forbidden');
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/transactions',
+          headers: { 'x-esign-key': hr.credential },
+          payload: { kind: 'HR_PACKET', name: 'Allowed onboarding', jurisdiction: 'NONE' },
+        })
+      ).statusCode,
+    ).toBe(201);
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/transactions',
+          headers: { 'x-esign-key': realEstate.credential },
+          payload: { kind: 'PROPERTY', name: 'Allowed listing', jurisdiction: 'NY' },
+        })
+      ).statusCode,
+    ).toBe(201);
+
+    const forbiddenIntent = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions',
+      headers: { 'x-esign-key': hr.credential },
+      payload: {
+        actor: {
+          subject: 'homix:hr-operator',
+          email: 'hr@homixny.com',
+          displayName: 'Homix HR',
+          role: 'preparer',
+        },
+        intent: { kind: 'view-envelope', envelopeId: fixtures.realEstateEnvelope.id },
+        returnUrl,
+      },
+    });
+    expect(forbiddenIntent.statusCode).toBe(404);
+
+    const launch = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions',
+      headers: { 'x-esign-key': hr.credential },
+      payload: {
+        actor: {
+          subject: 'homix:hr-operator',
+          email: 'hr@homixny.com',
+          displayName: 'Homix HR',
+          role: 'preparer',
+        },
+        intent: { kind: 'dashboard' },
+        returnUrl,
+      },
+    });
+    expect(launch.statusCode).toBe(201);
+    const ticket = new URLSearchParams(new URL(launch.json().data.launchUrl).hash.slice(1)).get(
+      'ticket',
+    );
+    const exchange = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions/exchange',
+      payload: { ticket },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const cookie = cookies(exchange);
+    const csrf = exchange.cookies.find((item) => item.name === 'esign_staff_csrf')?.value;
+    expect(
+      (await server.inject({ method: 'GET', url: '/v1/templates', headers: { cookie } }))
+        .json()
+        .data.map((item: { id: string }) => item.id),
+    ).toEqual([fixtures.hrTemplate.id]);
+    expect(
+      (
+        await server.inject({
+          method: 'GET',
+          url: `/v1/envelopes/${fixtures.realEstateEnvelope.id}`,
+          headers: { cookie },
+        })
+      ).statusCode,
+    ).toBe(404);
+    const delegatedDashboard = await server.inject({
+      method: 'GET',
+      url: '/v1/dashboard',
+      headers: { cookie },
+    });
+    expect(delegatedDashboard.statusCode).toBe(200);
+    expect(delegatedDashboard.json().data.counts).toMatchObject({
+      templates: 1,
+      drafts: 1,
+    });
+    expect(delegatedDashboard.json().data.workspace.members).toBeUndefined();
+    expect(
+      delegatedDashboard
+        .json()
+        .data.recentEnvelopes.map(
+          (item: { businessDomain: BusinessDomain }) => item.businessDomain,
+        ),
+    ).toEqual(['HR']);
+    expect(delegatedDashboard.json().data.recentAudit).toEqual([]);
+    const delegatedCrossCreate = await server.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: { cookie, 'x-csrf-token': csrf! },
+      payload: { kind: 'PROPERTY', name: 'Delegated blocked listing', jurisdiction: 'NY' },
+    });
+    expect(delegatedCrossCreate.statusCode).toBe(403);
+    expect(delegatedCrossCreate.json().error.code).toBe('business_domain_forbidden');
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/transactions',
+          headers: { cookie, 'x-csrf-token': csrf! },
+          payload: {
+            kind: 'HR_PACKET',
+            name: 'Delegated allowed onboarding',
+            jurisdiction: 'NONE',
+          },
+        })
+      ).statusCode,
+    ).toBe(201);
+  });
+
+  it('does not expose template or audit dashboard data without delegated scopes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-dashboard-scopes-'));
+    const fixtures = domainFixtureState();
+    const repository = new InMemoryRepository(fixtures.state);
+    const server = await buildServer(config, {
+      repository,
+      objects: new LocalObjectStore(path.join(root, 'objects')),
+      email: new NoopEmail(),
+      signer: new HmacManifestSigner(config.SESSION_SECRET),
+      scanner: new LocalFileScanner(),
+    });
+    servers.push(server);
+
+    const returnUrl = 'https://agents.homixny.com/esign/return';
+    const envelopeOnly = await server.inject({
+      method: 'POST',
+      url: '/v1/application-clients',
+      payload: {
+        name: 'Envelope-only dashboard',
+        scopes: ['integration-sessions:create', 'envelopes:read'],
+        businessDomains: ['HR'],
+        allowedReturnUrls: [returnUrl],
+      },
+    });
+    expect(envelopeOnly.statusCode).toBe(201);
+    const launch = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions',
+      headers: { 'x-esign-key': envelopeOnly.json().data.credential },
+      payload: {
+        actor: {
+          subject: 'homix:dashboard-envelope-only',
+          email: 'agent@homixny.com',
+          displayName: 'Envelope-only Agent',
+          role: 'preparer',
+        },
+        intent: { kind: 'dashboard' },
+        returnUrl,
+      },
+    });
+    expect(launch.statusCode).toBe(201);
+    const ticket = new URLSearchParams(new URL(launch.json().data.launchUrl).hash.slice(1)).get(
+      'ticket',
+    );
+    const exchange = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions/exchange',
+      payload: { ticket },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const dashboard = await server.inject({
+      method: 'GET',
+      url: '/v1/dashboard',
+      headers: { cookie: cookies(exchange) },
+    });
+    expect(dashboard.statusCode).toBe(200);
+    expect(dashboard.json().data.counts.templates).toBe(0);
+    expect(dashboard.json().data.recentAudit).toEqual([]);
+
+    const templatesOnly = await server.inject({
+      method: 'POST',
+      url: '/v1/application-clients',
+      payload: {
+        name: 'Templates-only dashboard',
+        scopes: ['integration-sessions:create', 'templates:read'],
+        businessDomains: ['HR'],
+        allowedReturnUrls: [returnUrl],
+      },
+    });
+    expect(templatesOnly.statusCode).toBe(201);
+    const forbiddenLaunch = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions',
+      headers: { 'x-esign-key': templatesOnly.json().data.credential },
+      payload: {
+        actor: {
+          subject: 'homix:dashboard-templates-only',
+          email: 'hr@homixny.com',
+          displayName: 'Templates-only HR',
+          role: 'preparer',
+        },
+        intent: { kind: 'dashboard' },
+        returnUrl,
+      },
+    });
+    expect(forbiddenLaunch.statusCode).toBe(201);
+    const forbiddenTicket = new URLSearchParams(
+      new URL(forbiddenLaunch.json().data.launchUrl).hash.slice(1),
+    ).get('ticket');
+    const forbiddenExchange = await server.inject({
+      method: 'POST',
+      url: '/v1/integration-sessions/exchange',
+      payload: { ticket: forbiddenTicket },
+    });
+    expect(forbiddenExchange.statusCode).toBe(200);
+    const forbiddenDashboard = await server.inject({
+      method: 'GET',
+      url: '/v1/dashboard',
+      headers: { cookie: cookies(forbiddenExchange) },
+    });
+    expect(forbiddenDashboard.statusCode).toBe(403);
+    expect(forbiddenDashboard.json().error.code).toBe('forbidden');
+
+    const directDashboard = await server.inject({ method: 'GET', url: '/v1/dashboard' });
+    expect(directDashboard.statusCode).toBe(200);
+    expect(directDashboard.json().data.counts.templates).toBe(2);
+    expect(directDashboard.json().data.recentAudit.length).toBeGreaterThan(0);
+  });
+
+  it('fails closed for legacy application clients with missing or empty business domains', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-legacy-domain-'));
+    const fixtures = domainFixtureState();
+    const missingSecret = 'missing-domain-secret-at-least-thirty-two-characters';
+    const emptySecret = 'empty-domain-secret-at-least-thirty-two-characters';
+    const legacyClient = (name: string, secret: string): ApplicationClient => ({
+      id: crypto.randomUUID(),
+      workspaceId: WORKSPACE_ID,
+      name,
+      secretHash: sha256(secret),
+      scopes: ['templates:read', 'transactions:write'],
+      businessDomains: [],
+      allowedReturnUrls: [],
+      status: 'ACTIVE',
+      createdAt: FIXTURE_TIME,
+    });
+    const missing = legacyClient('Missing legacy domain', missingSecret);
+    delete (missing as Partial<ApplicationClient>).businessDomains;
+    const empty = legacyClient('Empty legacy domain', emptySecret);
+    fixtures.state.applicationClients.push(missing, empty);
+    const repository = new InMemoryRepository(fixtures.state);
+    const server = await buildServer(config, {
+      repository,
+      objects: new LocalObjectStore(path.join(root, 'objects')),
+      email: new NoopEmail(),
+      signer: new HmacManifestSigner(config.SESSION_SECRET),
+      scanner: new LocalFileScanner(),
+    });
+    servers.push(server);
+
+    for (const [client, secret] of [
+      [missing, missingSecret],
+      [empty, emptySecret],
+    ] as const) {
+      const credential = `${client.id}.${secret}`;
+      const templates = await server.inject({
+        method: 'GET',
+        url: '/v1/templates',
+        headers: { 'x-esign-key': credential },
+      });
+      expect(templates.statusCode).toBe(401);
+      expect(templates.json().error.code).toBe('unauthorized');
+      expect(
+        (
+          await server.inject({
+            method: 'GET',
+            url: `/v1/templates/${fixtures.hrTemplate.id}`,
+            headers: { 'x-esign-key': credential },
+          })
+        ).statusCode,
+      ).toBe(401);
+      const create = await server.inject({
+        method: 'POST',
+        url: '/v1/transactions',
+        headers: { 'x-esign-key': credential },
+        payload: { kind: 'HR_PACKET', name: 'Blocked legacy create', jurisdiction: 'NONE' },
+      });
+      expect(create.statusCode).toBe(401);
+      expect(create.json().error.code).toBe('unauthorized');
+    }
   });
 });
