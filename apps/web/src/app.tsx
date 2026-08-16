@@ -44,6 +44,7 @@ import {
 import type {
   ApplicationClient,
   ApplicationScope,
+  BusinessDomain,
   Envelope,
   EvidencePackage,
   FieldType,
@@ -1669,6 +1670,7 @@ function SettingsPage() {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const businessDomain = form.get('businessDomain') as BusinessDomain;
     try {
       const result = await api<{
         client: Omit<ApplicationClient, 'secretHash'>;
@@ -1688,6 +1690,7 @@ function SettingsPage() {
             'evidence:read',
             'integration-sessions:create',
           ],
+          businessDomains: [businessDomain],
           connectorKey: form.get('connectorKey'),
           allowedReturnUrls: [form.get('returnUrl')],
         }),
@@ -1820,6 +1823,13 @@ function SettingsPage() {
             />
           </label>
           <label>
+            Business domain
+            <select name="businessDomain" required defaultValue="REAL_ESTATE">
+              <option value="REAL_ESTATE">Real estate</option>
+              <option value="HR">HR</option>
+            </select>
+          </label>
+          <label>
             Allowed return URL
             <input
               name="returnUrl"
@@ -1838,6 +1848,11 @@ function SettingsPage() {
               <div>
                 <strong>{client.name}</strong>
                 <small>{client.scopes.join(' · ')}</small>
+                <small>
+                  Business domain:{' '}
+                  {client.businessDomains?.map((domain) => domain.replace('_', ' ')).join(' · ') ||
+                    'Unassigned (blocked)'}
+                </small>
                 <small>Connector: {client.connectorKey ?? 'legacy'}</small>
                 <small>{client.allowedReturnUrls.join(' · ') || 'No return URL'}</small>
               </div>

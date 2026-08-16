@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   ApplicationClient,
+  BusinessDomain,
   CreateApplicationClientInput,
   CreateEnvelopeInput,
   CreateIntegrationSessionInput,
@@ -9,6 +10,7 @@ import type {
   Envelope,
   InvitationDelivery,
   IntegrationSessionExchange,
+  PlatformState,
   Recipient,
   SaveSigningProgress,
   SigningContext,
@@ -45,6 +47,7 @@ import {
   type ObjectStore,
   type PlatformRepository,
   type SigningEngine,
+  type SigningEngineEnvelope,
 } from '@esign/domain';
 import { inspectPdf } from '@esign/infrastructure';
 
@@ -70,17 +73,202 @@ function auditActor(principal: StaffPrincipal) {
   };
 }
 
+const ALL_BUSINESS_DOMAINS: readonly BusinessDomain[] = ['REAL_ESTATE', 'HR'];
+
+function allowedBusinessDomains(principal: StaffPrincipal): readonly BusinessDomain[] {
+  return actorType(principal) === 'staff'
+    ? ALL_BUSINESS_DOMAINS
+    : (principal.businessDomains ?? []);
+}
+
+function canAccessBusinessDomain(principal: StaffPrincipal, domain: BusinessDomain): boolean {
+  return allowedBusinessDomains(principal).includes(domain);
+}
+
+function requireBusinessDomain(
+  principal: StaffPrincipal,
+  domain: BusinessDomain,
+  conceal = false,
+): void {
+  if (canAccessBusinessDomain(principal, domain)) return;
+  throw new DomainError(
+    conceal ? 'not_found' : 'business_domain_forbidden',
+    conceal ? 'Resource not found.' : 'Application credential cannot access this business domain.',
+    conceal ? 404 : 403,
+  );
+}
+
+function transactionBusinessDomain(kind: Transaction['kind']): BusinessDomain {
+  return kind === 'HR_PACKET' ? 'HR' : 'REAL_ESTATE';
+}
+
+function templateBusinessDomain(template: Template): BusinessDomain | undefined {
+  const domains = new Set(template.versions.map((version) => version.businessDomain));
+  return domains.size === 1 ? [...domains][0] : undefined;
+}
+
+function requireTemplateAccess(principal: StaffPrincipal, template: Template): BusinessDomain {
+  const domain = templateBusinessDomain(template);
+  if (!domain) throw new DomainError('not_found', 'Resource not found.', 404);
+  requireBusinessDomain(principal, domain, true);
+  return domain;
+}
+
 function visibleTemplate(principal: StaffPrincipal, template: Template): Template | undefined {
+  const domain = templateBusinessDomain(template);
+  if (!domain || !canAccessBusinessDomain(principal, domain)) return undefined;
   if (
     actorType(principal) === 'staff' ||
-    (['integration', 'portal'].includes(actorType(principal)) &&
-      principal.delegatedScopes?.includes('templates:write'))
+    (actorType(principal) !== 'staff' && principal.delegatedScopes?.includes('templates:write'))
   )
     return structuredClone(template);
   const active = template.versions.find(
     (version) => version.id === template.activeVersionId && version.status === 'PUBLISHED',
   );
   return active ? { ...structuredClone(template), versions: [structuredClone(active)] } : undefined;
+}
+
+interface SigningEngineWebhookRecipient {
+  id?: string | number | undefined;
+  email: string;
+  readStatus?: string | undefined;
+  signingStatus?: string | undefined;
+  signedAt?: string | null | undefined;
+}
+
+interface SigningEngineWebhookPayload {
+  envelopeId: string;
+  externalId?: string | null | undefined;
+  status?: string | undefined;
+  completedAt?: string | null | undefined;
+  recipients?: SigningEngineWebhookRecipient[] | undefined;
+}
+
+function signingEngineWebhookMappingNotFound(): never {
+  // Keep every identifier mismatch indistinguishable from a missing mapping. Webhooks are an
+  // external trust boundary and must not reveal whether another local envelope or recipient exists.
+  throw new DomainError('not_found', 'Envelope mapping was not found.', 404);
+}
+
+function resolveSigningEngineWebhookEnvelope(
+  state: Readonly<PlatformState>,
+  connectionId: string,
+  payload: SigningEngineWebhookPayload,
+  expectedLocalEnvelopeId?: string,
+  allowExternalIdFallback = true,
+): { envelope: Envelope; usedExternalIdFallback: boolean } {
+  // A provider envelope ID is authoritative after it has been bound. Never let an externalId
+  // override that binding, even if both values independently point at local envelopes.
+  const providerMatches = state.envelopes.filter(
+    (candidate) =>
+      candidate.signingProviderConnectionId === connectionId &&
+      candidate.signingEngineEnvelopeId === payload.envelopeId,
+  );
+  if (providerMatches.length > 1) signingEngineWebhookMappingNotFound();
+
+  let envelope = providerMatches[0];
+  let usedExternalIdFallback = false;
+  if (envelope) {
+    if (
+      payload.externalId !== undefined &&
+      payload.externalId !== null &&
+      payload.externalId !== envelope.id
+    ) {
+      signingEngineWebhookMappingNotFound();
+    }
+  } else {
+    if (!allowExternalIdFallback || !payload.externalId) signingEngineWebhookMappingNotFound();
+    const fallbackMatches = state.envelopes.filter(
+      (candidate) =>
+        candidate.signingProviderConnectionId === connectionId &&
+        candidate.signingEngineEnvelopeId === undefined &&
+        candidate.signingEngineStatus === 'SYNCING' &&
+        candidate.id === payload.externalId,
+    );
+    if (fallbackMatches.length !== 1) signingEngineWebhookMappingNotFound();
+    envelope = fallbackMatches[0];
+    usedExternalIdFallback = true;
+  }
+
+  if (!envelope || (expectedLocalEnvelopeId && envelope.id !== expectedLocalEnvelopeId)) {
+    signingEngineWebhookMappingNotFound();
+  }
+  return { envelope, usedExternalIdFallback };
+}
+
+function validateSigningEngineWebhookRemoteEnvelope(
+  remote: SigningEngineEnvelope,
+  payload: SigningEngineWebhookPayload,
+  localEnvelopeId: string,
+): void {
+  if (remote.id !== payload.envelopeId || remote.externalId !== localEnvelopeId) {
+    throw new DomainError(
+      'signing_engine_invalid_response',
+      'Signing engine response identifiers are invalid.',
+      502,
+    );
+  }
+}
+
+function signingEngineRecipientIdEqual(
+  left: string | number | undefined,
+  right: string | number | undefined,
+): boolean {
+  return left !== undefined && right !== undefined && String(left) === String(right);
+}
+
+function resolveSigningEngineWebhookRecipients(
+  envelope: Envelope,
+  remotes: readonly SigningEngineWebhookRecipient[],
+): Array<{
+  recipient: Recipient;
+  remote: SigningEngineWebhookRecipient & { id: string | number };
+  bindProviderRecipientId: boolean;
+}> {
+  const resolved: Array<{
+    recipient: Recipient;
+    remote: SigningEngineWebhookRecipient & { id: string | number };
+    bindProviderRecipientId: boolean;
+  }> = [];
+  const claimedRecipientIds = new Set<string>();
+
+  for (const remote of remotes) {
+    const remoteId = remote.id;
+    if (remoteId === undefined || String(remoteId).length === 0) {
+      signingEngineWebhookMappingNotFound();
+    }
+    const normalizedEmail = remote.email.trim().toLowerCase();
+    const providerMatches = envelope.recipients.filter((candidate) =>
+      signingEngineRecipientIdEqual(candidate.signingEngineRecipientId, remoteId),
+    );
+    if (providerMatches.length > 1) signingEngineWebhookMappingNotFound();
+
+    let recipient = providerMatches[0];
+    let bindProviderRecipientId = false;
+    if (recipient) {
+      if (recipient.email.trim().toLowerCase() !== normalizedEmail) {
+        signingEngineWebhookMappingNotFound();
+      }
+    } else {
+      const emailMatches = envelope.recipients.filter(
+        (candidate) =>
+          candidate.signingEngineRecipientId === undefined &&
+          candidate.email.trim().toLowerCase() === normalizedEmail,
+      );
+      if (emailMatches.length !== 1) signingEngineWebhookMappingNotFound();
+      recipient = emailMatches[0];
+      bindProviderRecipientId = true;
+    }
+
+    if (!recipient || claimedRecipientIds.has(recipient.id)) signingEngineWebhookMappingNotFound();
+    claimedRecipientIds.add(recipient.id);
+    resolved.push({
+      recipient,
+      remote: { ...remote, id: remoteId },
+      bindProviderRecipientId,
+    });
+  }
+  return resolved;
 }
 
 export interface RequestContext {
@@ -100,8 +288,36 @@ export class ESignService {
     private readonly clock: Clock,
     private readonly launchSessionTtlSeconds = 5 * 60,
     private readonly staffSessionTtlSeconds = 60 * 60,
-    private readonly signingEngine?: SigningEngine,
+    private readonly signingEngines: ReadonlyMap<string, SigningEngine> = new Map(),
   ) {}
+
+  private signingConnection(
+    state: Readonly<import('@esign/contracts').PlatformState>,
+    workspaceId: string,
+    frozenConnectionId?: string,
+    hasProviderEnvelopeBinding = false,
+  ): { connectionId: string; engine: SigningEngine } | undefined {
+    const workspace = state.workspaces.find((candidate) => candidate.id === workspaceId);
+    if (!workspace) throw new DomainError('not_found', 'Workspace not found.', 404);
+    if (hasProviderEnvelopeBinding && !frozenConnectionId) {
+      throw new DomainError(
+        'signing_provider_unavailable',
+        'The envelope signing provider connection is unavailable.',
+        503,
+      );
+    }
+    const connectionId = frozenConnectionId ?? workspace.signingProviderConnectionId;
+    if (!connectionId) return undefined;
+    const engine = this.signingEngines.get(connectionId);
+    if (!engine) {
+      throw new DomainError(
+        'signing_provider_unavailable',
+        'The workspace signing provider is unavailable.',
+        503,
+      );
+    }
+    return { connectionId, engine };
+  }
 
   listApplicationClients(principal: StaffPrincipal): Promise<ApplicationClientView[]> {
     requirePermission(principal, 'workspace.manage');
@@ -135,6 +351,14 @@ export class ESignService {
         );
       }
     }
+    const businessDomains = [...new Set(input.businessDomains)];
+    if (businessDomains.length !== 1) {
+      throw new DomainError(
+        'business_domain_required',
+        'Each application credential must belong to exactly one business domain.',
+        422,
+      );
+    }
     const id = newId();
     const secret = createSecret(32);
     const now = this.clock.now().toISOString();
@@ -145,6 +369,7 @@ export class ESignService {
       connectorKey: input.connectorKey ?? `client-${id}`,
       secretHash: sha256(secret),
       scopes: [...new Set(input.scopes)],
+      businessDomains,
       allowedReturnUrls: [
         ...new Set(input.allowedReturnUrls.map((returnUrl) => new URL(returnUrl).toString())),
       ],
@@ -175,7 +400,11 @@ export class ESignService {
         type: 'application_client.created',
         occurredAt: now,
         requestId: context.requestId,
-        payload: { clientId: id, scopes: client.scopes },
+        payload: {
+          clientId: id,
+          scopes: client.scopes,
+          businessDomains: client.businessDomains,
+        },
       });
       const { secretHash: _secretHash, ...view } = client;
       return { client: structuredClone(view), credential: `${id}.${secret}` };
@@ -263,7 +492,11 @@ export class ESignService {
           candidate.workspaceId === principal.workspaceId,
       );
       const normalizedReturnUrl = new URL(input.returnUrl).toString();
-      if (!client?.allowedReturnUrls?.includes(normalizedReturnUrl)) {
+      if (
+        !client ||
+        client.businessDomains?.length !== 1 ||
+        !client.allowedReturnUrls?.includes(normalizedReturnUrl)
+      ) {
         throw new DomainError(
           'return_url_not_allowed',
           'Integration return URL is not registered for this application.',
@@ -271,11 +504,20 @@ export class ESignService {
         );
       }
       if (input.intent.kind === 'edit-template') {
-        findTemplate(state, principal.workspaceId, input.intent.templateId);
+        const template = visibleTemplate(
+          principal,
+          findTemplate(state, principal.workspaceId, input.intent.templateId),
+        );
+        if (!template) throw new DomainError('not_found', 'Resource not found.', 404);
       }
       if (input.intent.kind === 'prepare-envelope' && input.intent.templateId) {
         const template = findTemplate(state, principal.workspaceId, input.intent.templateId);
-        if (!template.activeVersionId) {
+        const visible = visibleTemplate(principal, template);
+        if (!visible) throw new DomainError('not_found', 'Resource not found.', 404);
+        const active = visible.versions.find(
+          (version) => version.id === visible.activeVersionId && version.status === 'PUBLISHED',
+        );
+        if (!active) {
           throw new DomainError(
             'template_unavailable',
             'Template has no active published version.',
@@ -284,7 +526,8 @@ export class ESignService {
         }
       }
       if (input.intent.kind === 'view-envelope') {
-        findEnvelope(state, principal.workspaceId, input.intent.envelopeId);
+        const envelope = findEnvelope(state, principal.workspaceId, input.intent.envelopeId);
+        requireBusinessDomain(principal, envelope.businessDomain, true);
       }
       const now = this.clock.now();
       const expiresAt = new Date(now.getTime() + this.launchSessionTtlSeconds * 1000).toISOString();
@@ -336,6 +579,7 @@ export class ESignService {
         new Date(launch.expiresAt) <= now ||
         !client ||
         client.status !== 'ACTIVE' ||
+        client.businessDomains?.length !== 1 ||
         (client.expiresAt && new Date(client.expiresAt) <= now)
       ) {
         throw new DomainError(
@@ -376,6 +620,7 @@ export class ESignService {
         sourceApplicationClientId: client.id,
         sourceApplicationName: client.name,
         delegatedScopes: structuredClone(client.scopes),
+        businessDomains: structuredClone(client.businessDomains),
         returnUrl: launch.returnUrl,
       };
       appendAudit(state, {
@@ -478,6 +723,7 @@ export class ESignService {
     context: RequestContext,
   ): Promise<Template> {
     requirePermission(principal, 'template.manage');
+    requireBusinessDomain(principal, input.businessDomain);
     if (file.bytes.byteLength > 30 * 1024 * 1024)
       throw new DomainError('file_too_large', 'PDF exceeds the 30 MB limit.', 413);
     if (file.mimetype !== 'application/pdf' || !file.filename.toLowerCase().endsWith('.pdf')) {
@@ -559,8 +805,10 @@ export class ESignService {
     requirePermission(principal, 'template.manage');
     return this.repository.write((state) => {
       const template = findTemplate(state, principal.workspaceId, templateId);
+      requireTemplateAccess(principal, template);
       const version = template.versions.find((candidate) => candidate.id === versionId);
       if (!version) throw new DomainError('not_found', 'Template version not found.', 404);
+      requireBusinessDomain(principal, version.businessDomain, true);
       if (version.status !== 'DRAFT')
         throw new DomainError(
           'immutable_version',
@@ -596,6 +844,20 @@ export class ESignService {
     context: RequestContext,
   ): Promise<TemplateDocument> {
     requirePermission(principal, 'template.manage');
+    await this.repository.read((state) => {
+      const template = findTemplate(state, principal.workspaceId, templateId);
+      requireTemplateAccess(principal, template);
+      const version = template.versions.find((candidate) => candidate.id === versionId);
+      if (!version) throw new DomainError('not_found', 'Template version not found.', 404);
+      requireBusinessDomain(principal, version.businessDomain, true);
+      if (version.status !== 'DRAFT') {
+        throw new DomainError(
+          'immutable_version',
+          'Published template versions cannot be edited.',
+          409,
+        );
+      }
+    });
     if (file.bytes.byteLength > 30 * 1024 * 1024) {
       throw new DomainError('file_too_large', 'PDF exceeds the 30 MB limit.', 413);
     }
@@ -610,8 +872,10 @@ export class ESignService {
     await this.objects.put(objectKey, file.bytes, 'application/pdf');
     return this.repository.write((state) => {
       const template = findTemplate(state, principal.workspaceId, templateId);
+      requireTemplateAccess(principal, template);
       const version = template.versions.find((candidate) => candidate.id === versionId);
       if (!version) throw new DomainError('not_found', 'Template version not found.', 404);
+      requireBusinessDomain(principal, version.businessDomain, true);
       if (version.status !== 'DRAFT') {
         throw new DomainError(
           'immutable_version',
@@ -658,8 +922,10 @@ export class ESignService {
     requirePermission(principal, 'template.manage');
     return this.repository.write((state) => {
       const template = findTemplate(state, principal.workspaceId, templateId);
+      requireTemplateAccess(principal, template);
       const version = template.versions.find((candidate) => candidate.id === versionId);
       if (!version) throw new DomainError('not_found', 'Template version not found.', 404);
+      requireBusinessDomain(principal, version.businessDomain, true);
       if (version.status !== 'DRAFT')
         throw new DomainError('invalid_template_state', 'Only a draft can be published.', 409);
       validateTemplateForPublication(version);
@@ -695,8 +961,10 @@ export class ESignService {
     requirePermission(principal, 'template.manage');
     return this.repository.write((state) => {
       const template = findTemplate(state, principal.workspaceId, templateId);
+      requireTemplateAccess(principal, template);
       const source = template.versions.find((candidate) => candidate.id === sourceVersionId);
       if (!source) throw new DomainError('not_found', 'Template version not found.', 404);
+      requireBusinessDomain(principal, source.businessDomain, true);
       const now = this.clock.now().toISOString();
       const version: TemplateVersion = {
         ...structuredClone(source),
@@ -722,8 +990,10 @@ export class ESignService {
     requirePermission(principal, 'template.manage');
     return this.repository.write((state) => {
       const template = findTemplate(state, principal.workspaceId, templateId);
+      requireTemplateAccess(principal, template);
       const version = template.versions.find((candidate) => candidate.id === versionId);
       if (!version) throw new DomainError('not_found', 'Template version not found.', 404);
+      requireBusinessDomain(principal, version.businessDomain, true);
       if (version.status !== 'PUBLISHED')
         throw new DomainError(
           'invalid_template_state',
@@ -745,16 +1015,9 @@ export class ESignService {
     requirePermission(principal, 'template.read');
     const key = await this.repository.read((state) => {
       const template = findTemplate(state, principal.workspaceId, templateId);
-      const versions =
-        actorType(principal) === 'application' ||
-        (['integration', 'portal'].includes(actorType(principal)) &&
-          !principal.delegatedScopes?.includes('templates:write'))
-          ? template.versions.filter(
-              (version) =>
-                version.id === template.activeVersionId && version.status === 'PUBLISHED',
-            )
-          : template.versions;
-      const document = versions
+      const visible = visibleTemplate(principal, template);
+      if (!visible) throw new DomainError('not_found', 'Resource not found.', 404);
+      const document = visible.versions
         .flatMap((version) => version.documents)
         .find((candidate) => candidate.id === documentId);
       if (!document) throw new DomainError('not_found', 'Document not found.', 404);
@@ -766,7 +1029,11 @@ export class ESignService {
   listTransactions(principal: StaffPrincipal): Promise<Transaction[]> {
     requirePermission(principal, 'transaction.read');
     return this.repository.read((state) =>
-      state.transactions.filter((item) => item.workspaceId === principal.workspaceId),
+      state.transactions.filter(
+        (item) =>
+          item.workspaceId === principal.workspaceId &&
+          canAccessBusinessDomain(principal, transactionBusinessDomain(item.kind)),
+      ),
     );
   }
 
@@ -776,6 +1043,7 @@ export class ESignService {
     context: RequestContext,
   ): Promise<Transaction> {
     requirePermission(principal, 'transaction.manage');
+    requireBusinessDomain(principal, transactionBusinessDomain(input.kind));
     const now = this.clock.now().toISOString();
     const transaction: Transaction = {
       id: newId(),
@@ -794,6 +1062,7 @@ export class ESignService {
         state.transactions.some(
           (item) =>
             item.workspaceId === principal.workspaceId &&
+            transactionBusinessDomain(item.kind) === transactionBusinessDomain(transaction.kind) &&
             item.externalReference === transaction.externalReference,
         )
       ) {
@@ -819,15 +1088,21 @@ export class ESignService {
   listEnvelopes(principal: StaffPrincipal): Promise<Envelope[]> {
     requirePermission(principal, 'envelope.read');
     return this.repository.read((state) =>
-      state.envelopes.filter((envelope) => envelope.workspaceId === principal.workspaceId),
+      state.envelopes.filter(
+        (envelope) =>
+          envelope.workspaceId === principal.workspaceId &&
+          canAccessBusinessDomain(principal, envelope.businessDomain),
+      ),
     );
   }
 
   getEnvelope(principal: StaffPrincipal, envelopeId: string): Promise<Envelope> {
     requirePermission(principal, 'envelope.read');
-    return this.repository.read((state) =>
-      structuredClone(findEnvelope(state, principal.workspaceId, envelopeId)),
-    );
+    return this.repository.read((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
+      return structuredClone(envelope);
+    });
   }
 
   createEnvelope(
@@ -840,17 +1115,6 @@ export class ESignService {
     if (!idempotencyKey)
       throw new DomainError('idempotency_required', 'Idempotency-Key is required.', 400);
     return this.repository.write((state) => {
-      const replay = assertIdempotency(
-        state,
-        principal.workspaceId,
-        'create-envelope',
-        idempotencyKey,
-        input,
-      );
-      if (replay)
-        return structuredClone(
-          findEnvelope(state, principal.workspaceId, (replay as { id: string }).id),
-        );
       const template = findTemplate(state, principal.workspaceId, input.templateId);
       const version = template.versions.find(
         (candidate) => candidate.id === template.activeVersionId,
@@ -862,12 +1126,42 @@ export class ESignService {
           409,
         );
       }
-      if (input.transactionId) findTransaction(state, principal.workspaceId, input.transactionId);
+      const templateDomain = templateBusinessDomain(template);
+      if (!templateDomain || templateDomain !== version.businessDomain) {
+        throw new DomainError('not_found', 'Resource not found.', 404);
+      }
+      requireBusinessDomain(principal, version.businessDomain);
+      const idempotencyOperation = `create-envelope:${version.businessDomain}`;
+      const replay = assertIdempotency(
+        state,
+        principal.workspaceId,
+        idempotencyOperation,
+        idempotencyKey,
+        input,
+      );
+      if (replay) {
+        const envelope = findEnvelope(state, principal.workspaceId, (replay as { id: string }).id);
+        requireBusinessDomain(principal, envelope.businessDomain, true);
+        return structuredClone(envelope);
+      }
+      if (input.transactionId) {
+        const transaction = findTransaction(state, principal.workspaceId, input.transactionId);
+        const transactionDomain = transactionBusinessDomain(transaction.kind);
+        requireBusinessDomain(principal, transactionDomain, true);
+        if (transactionDomain !== version.businessDomain) {
+          throw new DomainError(
+            'business_domain_mismatch',
+            'Transaction and template must use the same business domain.',
+            422,
+          );
+        }
+      }
       if (
         input.externalReference &&
         state.envelopes.some(
           (candidate) =>
             candidate.workspaceId === principal.workspaceId &&
+            candidate.businessDomain === version.businessDomain &&
             candidate.externalReference === input.externalReference,
         )
       ) {
@@ -948,7 +1242,7 @@ export class ESignService {
       recordIdempotency(
         state,
         principal.workspaceId,
-        'create-envelope',
+        idempotencyOperation,
         idempotencyKey,
         input,
         { id: envelope.id },
@@ -966,6 +1260,7 @@ export class ESignService {
     requirePermission(principal, 'envelope.approve');
     return this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
       if (envelope.status !== 'APPROVAL_PENDING') {
         throw new DomainError('invalid_transition', 'Envelope is not awaiting approval.', 409);
       }
@@ -995,11 +1290,22 @@ export class ESignService {
     requirePermission(principal, 'envelope.send');
     if (!idempotencyKey)
       throw new DomainError('idempotency_required', 'Idempotency-Key is required.', 400);
-    if (this.signingEngine) {
-      return this.sendWithSigningEngine(principal, envelopeId, idempotencyKey, context);
+    const connection = await this.repository.read((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
+      return this.signingConnection(
+        state,
+        principal.workspaceId,
+        envelope.signingProviderConnectionId,
+        envelope.signingEngineEnvelopeId !== undefined,
+      );
+    });
+    if (connection) {
+      return this.sendWithSigningEngine(principal, envelopeId, idempotencyKey, context, connection);
     }
     const result = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
       const replay = assertIdempotency(
         state,
         principal.workspaceId,
@@ -1083,9 +1389,22 @@ export class ESignService {
     envelopeId: string,
     idempotencyKey: string,
     context: RequestContext,
+    connection: { connectionId: string; engine: SigningEngine },
   ): Promise<{ envelope: Envelope; replayed: boolean; invitationUrls: string[] }> {
+    const { connectionId, engine } = connection;
     const prepared = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
+      if (
+        envelope.signingProviderConnectionId &&
+        envelope.signingProviderConnectionId !== connectionId
+      ) {
+        throw new DomainError(
+          'signing_provider_mismatch',
+          'Envelope is assigned to a different signing provider connection.',
+          409,
+        );
+      }
       const replay = assertIdempotency(
         state,
         principal.workspaceId,
@@ -1118,7 +1437,8 @@ export class ESignService {
           409,
         );
       }
-      envelope.signingEngine = this.signingEngine!.provider;
+      envelope.signingProviderConnectionId = connectionId;
+      envelope.signingEngine = engine.provider;
       envelope.signingEngineStatus = 'SYNCING';
       envelope.signingEngineSyncedAt = now.toISOString();
       return { envelope: structuredClone(envelope), replayed: false, proceed: true };
@@ -1129,8 +1449,8 @@ export class ESignService {
 
     try {
       let external = prepared.envelope.signingEngineEnvelopeId
-        ? await this.signingEngine!.getEnvelope(prepared.envelope.signingEngineEnvelopeId)
-        : await this.signingEngine!.findEnvelopeByExternalId(prepared.envelope.id);
+        ? await engine.getEnvelope(prepared.envelope.signingEngineEnvelopeId)
+        : await engine.findEnvelopeByExternalId(prepared.envelope.id);
       if (!external) {
         const documents = await Promise.all(
           prepared.envelope.documents.map(async (document) => ({
@@ -1140,10 +1460,10 @@ export class ESignService {
             bytes: await this.objects.get(document.objectKey),
           })),
         );
-        external = await this.signingEngine!.createEnvelope(prepared.envelope, documents);
+        external = await engine.createEnvelope(prepared.envelope, documents);
       }
       if (external.status === 'DRAFT') {
-        external = await this.signingEngine!.distributeEnvelope(external.id);
+        external = await engine.distributeEnvelope(external.id);
       }
       const firstRoutingOrder = Math.min(
         ...prepared.envelope.recipients
@@ -1152,7 +1472,15 @@ export class ESignService {
       );
       const updated = await this.repository.write((state) => {
         const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-        envelope.signingEngine = this.signingEngine!.provider;
+        requireBusinessDomain(principal, envelope.businessDomain, true);
+        if (envelope.signingProviderConnectionId !== connectionId) {
+          throw new DomainError(
+            'signing_provider_mismatch',
+            'Envelope is assigned to a different signing provider connection.',
+            409,
+          );
+        }
+        envelope.signingEngine = engine.provider;
         envelope.signingEngineEnvelopeId = external.id;
         envelope.signingEngineStatus = external.status;
         envelope.signingEngineSyncedAt = this.clock.now().toISOString();
@@ -1183,7 +1511,11 @@ export class ESignService {
           type: 'envelope.sent',
           occurredAt: envelope.sentAt ?? this.clock.now().toISOString(),
           requestId: context.requestId,
-          payload: { signingEngine: this.signingEngine!.provider, externalEnvelopeId: external.id },
+          payload: {
+            signingEngine: engine.provider,
+            signingProviderConnectionId: connectionId,
+            externalEnvelopeId: external.id,
+          },
         });
         recordIdempotency(
           state,
@@ -1199,6 +1531,7 @@ export class ESignService {
       let reconciled = updated;
       if (external.status === 'COMPLETED' && updated.status !== 'COMPLETED') {
         await this.handleSigningEngineEvent(
+          connectionId,
           {
             event: 'DOCUMENT_COMPLETED',
             createdAt: external.completedAt ?? this.clock.now().toISOString(),
@@ -1234,6 +1567,14 @@ export class ESignService {
     } catch (error) {
       await this.repository.write((state) => {
         const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+        requireBusinessDomain(principal, envelope.businessDomain, true);
+        if (envelope.signingProviderConnectionId !== connectionId) {
+          throw new DomainError(
+            'signing_provider_mismatch',
+            'Envelope is assigned to a different signing provider connection.',
+            409,
+          );
+        }
         envelope.signingEngineStatus = 'FAILED';
         envelope.signingEngineSyncedAt = this.clock.now().toISOString();
         appendAudit(state, {
@@ -1243,7 +1584,10 @@ export class ESignService {
           type: 'signing_engine.sync_failed',
           occurredAt: this.clock.now().toISOString(),
           requestId: context.requestId,
-          payload: { signingEngine: this.signingEngine!.provider },
+          payload: {
+            signingEngine: engine.provider,
+            signingProviderConnectionId: connectionId,
+          },
         });
       });
       throw error;
@@ -1281,32 +1625,52 @@ export class ESignService {
     recipientId: string,
   ): Promise<{ invitationUrl: string }> {
     requirePermission(principal, 'envelope.send');
-    const external = await this.repository.read((state) => {
+    const external = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
       if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
         throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
       }
-      return envelope.signingEngineEnvelopeId
-        ? {
-            envelopeId: envelope.signingEngineEnvelopeId,
-            recipientId: recipient.signingEngineRecipientId,
-          }
-        : undefined;
-    });
-    if (external) {
-      if (!this.signingEngine) {
+      if (!envelope.signingEngineEnvelopeId) {
+        if (envelope.signingProviderConnectionId) {
+          throw new DomainError(
+            'signing_engine_not_ready',
+            'External signing delivery has not completed.',
+            409,
+          );
+        }
+        return undefined;
+      }
+      const connection = this.signingConnection(
+        state,
+        principal.workspaceId,
+        envelope.signingProviderConnectionId,
+        true,
+      );
+      if (!connection) {
         throw new DomainError(
-          'signing_engine_disabled',
-          'External signing engine is disabled.',
+          'signing_provider_unavailable',
+          'The envelope signing provider is unavailable.',
           503,
         );
       }
-      await this.signingEngine.redistributeEnvelope(external.envelopeId, external.recipientId);
+      return {
+        connection,
+        envelopeId: envelope.signingEngineEnvelopeId,
+        recipientId: recipient.signingEngineRecipientId,
+      };
+    });
+    if (external) {
+      await external.connection.engine.redistributeEnvelope(
+        external.envelopeId,
+        external.recipientId,
+      );
       return { invitationUrl: '' };
     }
     const invitation = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
       if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
         throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
@@ -1339,8 +1703,9 @@ export class ESignService {
     requirePermission(principal, 'envelope.manage');
     if (reason.trim().length < 3)
       throw new DomainError('reason_required', 'A void reason is required.', 422);
-    const externalEnvelopeId = await this.repository.read((state) => {
+    const external = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
       if (
         ![
           'DRAFT',
@@ -1358,20 +1723,35 @@ export class ESignService {
           409,
         );
       }
-      return envelope.signingEngineEnvelopeId;
-    });
-    if (externalEnvelopeId) {
-      if (!this.signingEngine) {
+      if (!envelope.signingEngineEnvelopeId) return undefined;
+      const connection = this.signingConnection(
+        state,
+        principal.workspaceId,
+        envelope.signingProviderConnectionId,
+        true,
+      );
+      if (!connection) {
         throw new DomainError(
-          'signing_engine_disabled',
-          'External signing engine is disabled.',
+          'signing_provider_unavailable',
+          'The envelope signing provider is unavailable.',
           503,
         );
       }
-      await this.signingEngine.cancelEnvelope(externalEnvelopeId);
+      return { connection, envelopeId: envelope.signingEngineEnvelopeId };
+    });
+    if (external) {
+      await external.connection.engine.cancelEnvelope(external.envelopeId);
     }
     return this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
+      if (external && envelope.signingProviderConnectionId !== external.connection.connectionId) {
+        throw new DomainError(
+          'signing_provider_mismatch',
+          'Envelope is assigned to a different signing provider connection.',
+          409,
+        );
+      }
       const now = this.clock.now().toISOString();
       transitionEnvelope(envelope, 'VOIDED', now);
       envelope.voidReason = reason.trim();
@@ -1806,6 +2186,7 @@ export class ESignService {
     requirePermission(principal, 'evidence.read');
     return this.repository.read((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireBusinessDomain(principal, envelope.businessDomain, true);
       if (!envelope.evidencePackageId)
         throw new DomainError('evidence_pending', 'Evidence is not finalized.', 409);
       const evidence = state.evidencePackages.find(
@@ -1829,46 +2210,44 @@ export class ESignService {
     return this.objects.get(objectKey);
   }
 
-  async signingEngineHealth(): Promise<{ provider: string; reachable: boolean }> {
-    if (!this.signingEngine) return { provider: 'native', reachable: true };
-    return this.signingEngine.health();
+  async signingEngineHealth(
+    principal: StaffPrincipal,
+  ): Promise<{ provider: string; reachable: boolean }> {
+    const connection = await this.repository.read((state) =>
+      this.signingConnection(state, principal.workspaceId),
+    );
+    if (!connection) return { provider: 'native', reachable: true };
+    return connection.engine.health();
   }
 
   async handleSigningEngineEvent(
+    connectionId: string,
     event: {
       event: string;
       createdAt: string;
       payload: {
-        envelopeId: string;
-        externalId?: string | null | undefined;
-        status?: string | undefined;
-        completedAt?: string | null | undefined;
-        recipients?:
-          | Array<{
-              id?: string | number | undefined;
-              email: string;
-              readStatus?: string | undefined;
-              signingStatus?: string | undefined;
-              signedAt?: string | null | undefined;
-            }>
-          | undefined;
+        envelopeId: SigningEngineWebhookPayload['envelopeId'];
+        externalId?: SigningEngineWebhookPayload['externalId'];
+        status?: SigningEngineWebhookPayload['status'];
+        completedAt?: SigningEngineWebhookPayload['completedAt'];
+        recipients?: SigningEngineWebhookPayload['recipients'];
       };
     },
     context: RequestContext,
   ): Promise<{ accepted: true; replayed: boolean }> {
-    if (!this.signingEngine) {
+    const engine = this.signingEngines.get(connectionId);
+    if (!engine) {
       throw new DomainError('signing_engine_disabled', 'External signing engine is disabled.', 404);
     }
-    const eventKey = `signing-engine-event:${sha256(JSON.stringify(event))}`;
+    const eventKey = `signing-engine-event:${connectionId}:${sha256(JSON.stringify(event))}`;
     const local = await this.repository.read((state) => {
       if (state.idempotency[eventKey]) return { replayed: true as const };
-      const envelope = state.envelopes.find(
-        (candidate) =>
-          candidate.signingEngineEnvelopeId === event.payload.envelopeId ||
-          candidate.id === event.payload.externalId,
-      );
-      if (!envelope) throw new DomainError('not_found', 'Envelope mapping was not found.', 404);
-      return { replayed: false as const, envelope: structuredClone(envelope) };
+      const resolved = resolveSigningEngineWebhookEnvelope(state, connectionId, event.payload);
+      return {
+        replayed: false as const,
+        envelope: structuredClone(resolved.envelope),
+        usedExternalIdFallback: resolved.usedExternalIdFallback,
+      };
     });
     if (local.replayed) return { accepted: true, replayed: true };
     const isCompleted =
@@ -1877,7 +2256,8 @@ export class ESignService {
     let completedFiles:
       Array<{ documentId: string; objectKey: string; sha256: string }> | undefined;
     if (isCompleted && local.envelope.status !== 'COMPLETED') {
-      const external = await this.signingEngine.getEnvelope(event.payload.envelopeId);
+      const external = await engine.getEnvelope(event.payload.envelopeId);
+      validateSigningEngineWebhookRemoteEnvelope(external, event.payload, local.envelope.id);
       const localDocuments = [...local.envelope.documents].sort(
         (left, right) => left.order - right.order,
       );
@@ -1891,7 +2271,7 @@ export class ESignService {
       }
       completedFiles = await Promise.all(
         localDocuments.map(async (document, index) => {
-          const bytes = await this.signingEngine!.downloadItem(remoteItems[index]!.id);
+          const bytes = await engine.downloadItem(remoteItems[index]!.id);
           const digest = sha256(bytes);
           const objectKey = `engine-completed/${local.envelope.workspaceId}/${local.envelope.id}/${document.order}-${document.name}`;
           await this.objects.put(objectKey, bytes, 'application/pdf');
@@ -1902,24 +2282,27 @@ export class ESignService {
 
     const shouldFinalize = await this.repository.write((state) => {
       if (state.idempotency[eventKey]) return false;
-      const envelope = state.envelopes.find(
-        (candidate) =>
-          candidate.signingEngineEnvelopeId === event.payload.envelopeId ||
-          candidate.id === event.payload.externalId,
+      const { envelope } = resolveSigningEngineWebhookEnvelope(
+        state,
+        connectionId,
+        event.payload,
+        local.envelope.id,
+        local.usedExternalIdFallback,
       );
-      if (!envelope) throw new DomainError('not_found', 'Envelope mapping was not found.', 404);
+      // Resolve the complete recipient projection before mutating anything. This keeps in-memory
+      // repositories fail-closed as well as transactional repositories when an identifier is
+      // ambiguous or an email conflicts with an existing provider binding.
+      const recipientUpdates = resolveSigningEngineWebhookRecipients(
+        envelope,
+        event.payload.recipients ?? [],
+      );
       const now = this.clock.now().toISOString();
-      envelope.signingEngine = this.signingEngine!.provider;
+      envelope.signingEngine = engine.provider;
       envelope.signingEngineEnvelopeId = event.payload.envelopeId;
       envelope.signingEngineStatus = event.payload.status ?? event.event;
       envelope.signingEngineSyncedAt = now;
-      for (const remote of event.payload.recipients ?? []) {
-        const recipient = envelope.recipients.find(
-          (candidate) =>
-            (remote.id !== undefined && candidate.signingEngineRecipientId === remote.id) ||
-            candidate.email.toLowerCase() === remote.email.toLowerCase(),
-        );
-        if (!recipient) continue;
+      for (const { recipient, remote, bindProviderRecipientId } of recipientUpdates) {
+        if (bindProviderRecipientId) recipient.signingEngineRecipientId = remote.id;
         if (remote.signingStatus === 'SIGNED') {
           recipient.status = 'COMPLETED';
           recipient.completedAt = remote.signedAt ?? event.createdAt;
@@ -1986,13 +2369,14 @@ export class ESignService {
         workspaceId: envelope.workspaceId,
         envelopeId: envelope.id,
         actorType: 'system',
-        actorId: this.signingEngine!.provider,
+        actorId: engine.provider,
         type: `signing_engine.${event.event.toLowerCase()}`,
         occurredAt: event.createdAt,
         requestId: context.requestId,
         payload: {
           externalEnvelopeId: event.payload.envelopeId,
           externalStatus: event.payload.status,
+          signingProviderConnectionId: connectionId,
         },
       });
       if (!finalize) {
@@ -2032,14 +2416,37 @@ export class ESignService {
     return this.repository.read((state) => {
       requireWorkspace(principal, principal.workspaceId);
       const envelopes = state.envelopes.filter(
-        (candidate) => candidate.workspaceId === principal.workspaceId,
+        (candidate) =>
+          candidate.workspaceId === principal.workspaceId &&
+          canAccessBusinessDomain(principal, candidate.businessDomain),
       );
+      const delegatedTemplateAccess = principal.delegatedScopes?.some((scope) =>
+        ['templates:read', 'templates:write'].includes(scope),
+      );
+      const templateCount =
+        actorType(principal) === 'staff' || delegatedTemplateAccess
+          ? state.templates.filter(
+              (candidate) =>
+                candidate.workspaceId === principal.workspaceId &&
+                visibleTemplate(principal, candidate) !== undefined,
+            ).length
+          : 0;
+      const workspace = state.workspaces.find(
+        (candidate) => candidate.id === principal.workspaceId,
+      );
+      const safeWorkspace = (() => {
+        if (!workspace || actorType(principal) === 'staff') return structuredClone(workspace);
+        const { members: _members, ...publicWorkspace } = workspace;
+        return structuredClone(publicWorkspace);
+      })();
+      const auditEvents =
+        actorType(principal) === 'staff'
+          ? state.auditEvents.filter((candidate) => candidate.workspaceId === principal.workspaceId)
+          : [];
       return {
-        workspace: state.workspaces.find((candidate) => candidate.id === principal.workspaceId),
+        workspace: safeWorkspace,
         counts: {
-          templates: state.templates.filter(
-            (candidate) => candidate.workspaceId === principal.workspaceId,
-          ).length,
+          templates: templateCount,
           drafts: envelopes.filter((candidate) =>
             ['DRAFT', 'PREPARED', 'APPROVAL_PENDING', 'READY_TO_SEND'].includes(candidate.status),
           ).length,
@@ -2049,10 +2456,7 @@ export class ESignService {
           completed: envelopes.filter((candidate) => candidate.status === 'COMPLETED').length,
         },
         recentEnvelopes: envelopes.slice(-8).reverse(),
-        recentAudit: state.auditEvents
-          .filter((candidate) => candidate.workspaceId === principal.workspaceId)
-          .slice(-8)
-          .reverse(),
+        recentAudit: auditEvents.slice(-8).reverse(),
       };
     });
   }

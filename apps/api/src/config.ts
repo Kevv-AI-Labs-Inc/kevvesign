@@ -11,6 +11,12 @@ const EnvironmentSchema = z.object({
   EMAIL_DRIVER: z.enum(['local', 'azure']).default('local'),
   SIGNING_DRIVER: z.enum(['local', 'azure']).default('local'),
   SIGNING_ENGINE_PROVIDER: z.enum(['native', 'documenso']).default('native'),
+  SIGNING_PROVIDER_CONNECTION_ID: z
+    .string()
+    .min(2)
+    .max(80)
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .default('default-signing-provider'),
   SESSION_SECRET: z.string().min(32).default('development-only-secret-change-me-now'),
   LAUNCH_SESSION_TTL_SECONDS: z.coerce.number().int().min(60).max(900).default(300),
   STAFF_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(28_800).default(3600),

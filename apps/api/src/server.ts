@@ -56,6 +56,11 @@ declare module 'fastify' {
 
 const IdSchema = z.string().uuid();
 const TokenSchema = z.string().min(30).max(200);
+const SigningProviderConnectionIdSchema = z
+  .string()
+  .min(2)
+  .max(80)
+  .regex(/^[a-z0-9][a-z0-9-]*$/);
 const SigningEngineWebhookSchema = z.object({
   event: z
     .string()
@@ -147,6 +152,10 @@ export interface ApplicationDependencies {
   email: EmailPort;
   signer: ManifestSigner;
   scanner: FileScanner;
+  signingEngines?: ReadonlyMap<string, import('@esign/domain').SigningEngine>;
+  /** SHA-256 hashes only; plaintext webhook secrets never enter platform state. */
+  signingEngineWebhookSecretHashes?: ReadonlyMap<string, string>;
+  /** @deprecated Test compatibility; wrapped in the configured connection ID. */
   signingEngine?: import('@esign/domain').SigningEngine;
 }
 
@@ -181,21 +190,30 @@ export function createDependencies(config: AppConfig): ApplicationDependencies {
     config.NODE_ENV === 'production'
       ? new ClamAvFileScanner(config.CLAMAV_HOST, config.CLAMAV_PORT)
       : new LocalFileScanner();
-  const signingEngine =
-    config.SIGNING_ENGINE_PROVIDER === 'documenso'
-      ? new DocumensoSigningEngine(
-          config.DOCUMENSO_BASE_URL ?? '',
-          config.DOCUMENSO_API_TOKEN ?? '',
-          config.DOCUMENSO_REQUEST_TIMEOUT_MS,
-        )
-      : undefined;
+  const signingEngines = new Map<string, import('@esign/domain').SigningEngine>();
+  const signingEngineWebhookSecretHashes = new Map<string, string>();
+  if (config.SIGNING_ENGINE_PROVIDER === 'documenso') {
+    signingEngines.set(
+      config.SIGNING_PROVIDER_CONNECTION_ID,
+      new DocumensoSigningEngine(
+        config.DOCUMENSO_BASE_URL ?? '',
+        config.DOCUMENSO_API_TOKEN ?? '',
+        config.DOCUMENSO_REQUEST_TIMEOUT_MS,
+      ),
+    );
+    signingEngineWebhookSecretHashes.set(
+      config.SIGNING_PROVIDER_CONNECTION_ID,
+      sha256(config.DOCUMENSO_WEBHOOK_SECRET ?? ''),
+    );
+  }
   return {
     repository,
     objects,
     email,
     signer,
     scanner,
-    ...(signingEngine ? { signingEngine } : {}),
+    signingEngines,
+    signingEngineWebhookSecretHashes,
   };
 }
 
@@ -207,6 +225,7 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
         paths: [
           'req.headers.authorization',
           'req.headers.cookie',
+          'req.headers.x-esign-key',
           'req.headers.x-csrf-token',
           'req.url',
           'res.headers.set-cookie',
@@ -250,6 +269,16 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     dependencies.objects,
     dependencies.signer,
   );
+  const signingEngines =
+    dependencies.signingEngines ??
+    (dependencies.signingEngine
+      ? new Map([[config.SIGNING_PROVIDER_CONNECTION_ID, dependencies.signingEngine]])
+      : new Map());
+  const signingEngineWebhookSecretHashes =
+    dependencies.signingEngineWebhookSecretHashes ??
+    (config.SIGNING_ENGINE_PROVIDER === 'documenso' && config.DOCUMENSO_WEBHOOK_SECRET
+      ? new Map([[config.SIGNING_PROVIDER_CONNECTION_ID, sha256(config.DOCUMENSO_WEBHOOK_SECRET)]])
+      : new Map());
   const service = new ESignService(
     dependencies.repository,
     dependencies.objects,
@@ -260,7 +289,7 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     systemClock,
     config.LAUNCH_SESSION_TTL_SECONDS,
     config.STAFF_SESSION_TTL_SECONDS,
-    dependencies.signingEngine,
+    signingEngines,
   );
 
   app.setErrorHandler((error, request, reply) => {
@@ -331,44 +360,55 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     service: 'esign-api',
     time: new Date().toISOString(),
   }));
-  app.get('/v1/signing-engine/health', { preHandler: staff }, async () =>
-    success(await service.signingEngineHealth()),
+  app.get('/v1/signing-engine/health', { preHandler: staff }, async (request) =>
+    success(await service.signingEngineHealth(request.staff!)),
   );
+  const receiveDocumensoWebhook = async (connectionId: string, request: FastifyRequest) => {
+    const expectedSecretHash = signingEngineWebhookSecretHashes.get(connectionId);
+    if (!expectedSecretHash || !signingEngines.has(connectionId)) {
+      throw new DomainError('not_found', 'Resource not found.', 404);
+    }
+    const received = request.headers['x-documenso-secret'];
+    if (typeof received !== 'string' || !safeSecretEqual(received, expectedSecretHash)) {
+      throw new DomainError('unauthorized', 'Webhook authentication failed.', 401);
+    }
+    const event = SigningEngineWebhookSchema.parse(request.body);
+    const recipients = event.payload.recipients ?? event.payload.Recipient;
+    return success(
+      await service.handleSigningEngineEvent(
+        connectionId,
+        {
+          event: event.event,
+          createdAt: event.createdAt,
+          payload: {
+            envelopeId: String(event.payload.envelopeId ?? event.payload.id),
+            ...(event.payload.externalId !== undefined
+              ? { externalId: event.payload.externalId }
+              : {}),
+            ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
+            ...(event.payload.completedAt !== undefined
+              ? { completedAt: event.payload.completedAt }
+              : {}),
+            ...(recipients !== undefined ? { recipients } : {}),
+          },
+        },
+        requestContext(request),
+      ),
+    );
+  };
   app.post(
     '/v1/signing-engine/webhooks/documenso',
     { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
-    async (request) => {
-      if (config.SIGNING_ENGINE_PROVIDER !== 'documenso' || !config.DOCUMENSO_WEBHOOK_SECRET) {
-        throw new DomainError('not_found', 'Resource not found.', 404);
-      }
-      const received = request.headers['x-documenso-secret'];
-      if (
-        typeof received !== 'string' ||
-        !safeSecretEqual(received, sha256(config.DOCUMENSO_WEBHOOK_SECRET))
-      ) {
-        throw new DomainError('unauthorized', 'Webhook authentication failed.', 401);
-      }
-      const event = SigningEngineWebhookSchema.parse(request.body);
-      const recipients = event.payload.recipients ?? event.payload.Recipient;
-      return success(
-        await service.handleSigningEngineEvent(
-          {
-            event: event.event,
-            createdAt: event.createdAt,
-            payload: {
-              envelopeId: String(event.payload.envelopeId ?? event.payload.id),
-              ...(event.payload.externalId !== undefined
-                ? { externalId: event.payload.externalId }
-                : {}),
-              ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
-              ...(event.payload.completedAt !== undefined
-                ? { completedAt: event.payload.completedAt }
-                : {}),
-              ...(recipients !== undefined ? { recipients } : {}),
-            },
-          },
-          requestContext(request),
-        ),
+    (request) => receiveDocumensoWebhook(config.SIGNING_PROVIDER_CONNECTION_ID, request),
+  );
+  app.post(
+    '/v1/signing-engine/webhooks/documenso/:connectionId',
+    { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
+    (request) => {
+      const { connectionId } = request.params as { connectionId: string };
+      return receiveDocumensoWebhook(
+        SigningProviderConnectionIdSchema.parse(connectionId),
+        request,
       );
     },
   );
@@ -959,6 +999,12 @@ const OPENAPI = {
     '/signing-engine/webhooks/documenso': {
       post: {
         summary: 'Receive an authenticated Documenso lifecycle event',
+        security: [{ documensoWebhookSecret: [] }],
+      },
+    },
+    '/signing-engine/webhooks/documenso/{connectionId}': {
+      post: {
+        summary: 'Receive a connection-scoped authenticated Documenso lifecycle event',
         security: [{ documensoWebhookSecret: [] }],
       },
     },

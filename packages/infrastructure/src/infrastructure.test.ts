@@ -45,6 +45,29 @@ describe('local durable substitutes', () => {
     await expect(repository.read((state) => state.integrationLaunchSessions)).resolves.toEqual([]);
   });
 
+  it('migrates legacy application clients without a business domain as fail-closed', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-client-domain-migration-'));
+    const stateFile = path.join(root, 'state.json');
+    const legacy = seedState() as unknown as Record<string, unknown>;
+    legacy.applicationClients = [
+      {
+        id: crypto.randomUUID(),
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+        name: 'Legacy integration',
+        secretHash: 'a'.repeat(64),
+        scopes: ['templates:read'],
+        status: 'ACTIVE',
+        createdAt: '2026-08-12T12:00:00.000Z',
+      },
+    ];
+    await writeFile(stateFile, JSON.stringify(legacy));
+
+    const repository = new JsonFileRepository(stateFile, seedState);
+    await expect(
+      repository.read((state) => state.applicationClients[0]?.businessDomains),
+    ).resolves.toEqual([]);
+  });
+
   it('writes local email outbox without invoking a provider', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'esign-email-'));
     const email = new LocalEmailPort(root);
