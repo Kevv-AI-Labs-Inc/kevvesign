@@ -14,10 +14,10 @@
     "operatorObjectId": { "value": "9ccca00b-8358-4742-a024-82ea51607165" },
     "operatorPrincipalType": { "value": "User" },
     "webImage": {
-      "value": "acrkevvesigndev4k23mbcal6c76.azurecr.io/esign-web:20260811.2"
+      "value": "acrkevvesigndev4k23mbcal6c76.azurecr.io/esign-web:20260815.1"
     },
     "apiImage": {
-      "value": "acrkevvesigndev4k23mbcal6c76.azurecr.io/esign-api:20260811.2"
+      "value": "acrkevvesigndev4k23mbcal6c76.azurecr.io/esign-api:20260815.1"
     },
     "pdfFinalizerImage": {
       "value": "acrkevvesigndev4k23mbcal6c76.azurecr.io/esign-pdf:20260811.2"
@@ -29,6 +29,8 @@
     "entraClientId": { "value": "f5274aa3-d85f-49ec-9f17-d0a47aa107d3" },
     "acsEmailSender": {
       "value": "esign@esign.kevv.ai"
-    }
+    },
+    "signingEngineProvider": { "value": "native" },
+    "signingProviderConnectionId": { "value": "homix-documenso-primary" }
   }
 }

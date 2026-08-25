@@ -79,7 +79,7 @@ The Azure smoke credential is stored only in `kv-kevvesign-dev-lxgas2` as `porta
 For Homix Portal or another connected application:
 
 1. Register the exact Homix Portal HTTPS return URL.
-2. Issue a dedicated environment-specific application credential with only the required scopes.
+2. Issue two dedicated environment-specific application credentials when both workflows are needed: one restricted to `HR`, and one restricted to `REAL_ESTATE`, each with only its required scopes. Never reuse one credential across domains.
 3. Store it in the Homix Portal backend secret store; never send it to browser JavaScript.
 4. Have the connector backend call `POST /v1/integration-sessions`, then redirect the staff browser to the returned fragment-based `launchUrl`.
 5. Verify rotation and revocation, then revoke the deployment smoke client.
@@ -88,11 +88,13 @@ Configure standalone access with either the paired legacy Entra parameters or `o
 
 ## Documenso cutover
 
-The Documenso dev service is deployed independently from the Kevv eSign API. Its repeatable definition is `infra/documenso.bicep`; all credentials, encryption keys, and the development signing certificate are Key Vault references resolved through `id-documenso-kevvesign-dev`. Its public URL is `https://documenso.kevv.ai`. Account creation is limited to `homixny.com`, Google/Microsoft/OIDC sign-in is disabled for this initial bootstrap, and anonymous telemetry is disabled.
+The Documenso dev service is deployed independently from the Kevv eSign API. Its repeatable definition is `infra/documenso.bicep`; all credentials, encryption keys, and the development signing certificate are Key Vault references resolved through `id-documenso-kevvesign-dev`. Its public URL is `https://documenso.kevv.ai`. Public account creation is disabled after the two bootstrap accounts are created. No email-domain allowlist is baked into the deployment, so a future intentionally reopened registration flow is not tied to `homixny.com`. Google/Microsoft/OIDC sign-in is disabled for this initial bootstrap, and anonymous telemetry is disabled.
 
 Documenso migrations require the PostgreSQL extensions `pgcrypto` and `pg_trgm`. The Bicep definition allow-lists both extensions before starting the container and runs the upstream `start.sh` under a fail-fast shell. A migration failure must therefore keep the app unhealthy instead of allowing a schema-incompatible server to accept traffic.
 
-Keep `signingEngineProvider=native` until a Documenso administrator has created an API token and registered the Kevv eSign webhook. For the cutover, pass `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets in Key Vault and exposes them to the API through managed-identity secret references. Register the API webhook endpoint and shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
+Keep the workspace unmapped so it uses the native engine until a Documenso administrator has created an API token and registered the Kevv eSign webhook. For the cutover, configure a stable `signingProviderConnectionId` plus `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets only in Key Vault and exposes them to the API through managed-identity secret references. Deploying Documenso alone does not route Homix traffic to it—the workspace mapping must be changed explicitly. Register `/v1/signing-engine/webhooks/documenso/{connectionId}` and the shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
+
+The first external send freezes the connection ID on the envelope. To change Documenso accounts, create a new connection ID and map the workspace to it for new sends; do not reuse an existing ID with different account credentials, and retain the old connection while any frozen envelope may need webhook, resend, void, or evidence retrieval. Never place a Documenso token or webhook secret in application state, parameters JSON, shell history, CI output, or browser code.
 
 The bound hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. `documenso.kevv.ai` remains a DNS-only CNAME to its Container App hostname. `esign.kevv.ai` is a DNS-only A record to the Container Apps environment static IP so the same DNS name can also carry Azure Communication Services domain-verification and SPF TXT records. TXT records named `asuid.esign` and `asuid.documenso` contain the Container Apps environment custom-domain verification ID. Keep these records in place while the custom domains are active.
 

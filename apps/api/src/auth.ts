@@ -140,6 +140,7 @@ export class StaffAuthenticator {
         if (
           !client ||
           client.status !== 'ACTIVE' ||
+          client.businessDomains?.length !== 1 ||
           (client.expiresAt && new Date(client.expiresAt) <= new Date())
         ) {
           throw new DomainError('staff_session_invalid', 'Staff session is unavailable.', 401);
@@ -160,6 +161,7 @@ export class StaffAuthenticator {
           sourceApplicationClientId: client.id,
           sourceApplicationName: client.name,
           delegatedScopes: session.scopes,
+          businessDomains: structuredClone(client.businessDomains),
           returnUrl: session.returnUrl,
         };
       });
@@ -236,6 +238,7 @@ export class ApplicationAuthenticator {
       if (
         !client ||
         client.status !== 'ACTIVE' ||
+        client.businessDomains?.length !== 1 ||
         (client.expiresAt && new Date(client.expiresAt) <= this.now()) ||
         !safeSecretEqual(secret, client.secretHash)
       ) {
@@ -253,6 +256,7 @@ export class ApplicationAuthenticator {
         actorType: 'application',
         scopes: client.scopes,
         delegatedScopes: client.scopes,
+        businessDomains: structuredClone(client.businessDomains),
         sourceApplicationClientId: client.id,
         sourceApplicationName: client.name,
       };

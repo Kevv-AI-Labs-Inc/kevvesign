@@ -24,9 +24,6 @@ param managedCertificateName string = 'mc-cae-kevvesign--documenso-kevv-a-7104'
 @description('Pinned Documenso image. Upgrade intentionally after backup and validation.')
 param image string = 'documenso/documenso:v2.11.0'
 
-@description('Only these email domains may create staff accounts.')
-param allowedSignupDomains string = 'homixny.com'
-
 @description('Sender address already provisioned in Azure Communication Services Email.')
 param smtpFromAddress string = 'esign@esign.kevv.ai'
 
@@ -194,9 +191,8 @@ resource documenso 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'NEXT_PRIVATE_SMTP_PASSWORD', secretRef: 'smtp-password' }
             { name: 'NEXT_PRIVATE_SMTP_FROM_NAME', value: 'Kevv eSign' }
             { name: 'NEXT_PRIVATE_SMTP_FROM_ADDRESS', value: smtpFromAddress }
-            { name: 'NEXT_PRIVATE_ALLOWED_SIGNUP_DOMAINS', value: allowedSignupDomains }
-            { name: 'NEXT_PUBLIC_DISABLE_SIGNUP', value: 'false' }
-            { name: 'NEXT_PUBLIC_DISABLE_EMAIL_PASSWORD_SIGNUP', value: 'false' }
+            { name: 'NEXT_PUBLIC_DISABLE_SIGNUP', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_EMAIL_PASSWORD_SIGNUP', value: 'true' }
             { name: 'NEXT_PUBLIC_DISABLE_GOOGLE_SIGNUP', value: 'true' }
             { name: 'NEXT_PUBLIC_DISABLE_MICROSOFT_SIGNUP', value: 'true' }
             { name: 'NEXT_PUBLIC_DISABLE_OIDC_SIGNUP', value: 'true' }

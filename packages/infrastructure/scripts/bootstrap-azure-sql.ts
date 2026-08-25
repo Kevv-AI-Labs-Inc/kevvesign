@@ -19,6 +19,13 @@ const EnvironmentSchema = z.object({
   BOOTSTRAP_CLIENT_ID: z.string().uuid(),
   BOOTSTRAP_SECRET_HASH: z.string().regex(/^[a-f0-9]{64}$/),
   BOOTSTRAP_RETURN_URL: z.string().url(),
+  SIGNING_ENGINE_PROVIDER: z.enum(['native', 'documenso']).default('native'),
+  SIGNING_PROVIDER_CONNECTION_ID: z
+    .string()
+    .min(2)
+    .max(80)
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .default('default-signing-provider'),
 });
 
 const config = EnvironmentSchema.parse(process.env);
@@ -93,16 +100,21 @@ try {
       ],
     });
   }
+  const workspace = workspaces.find(
+    (candidate) => isRecord(candidate) && candidate.id === workspaceId,
+  );
+  if (isRecord(workspace) && config.SIGNING_ENGINE_PROVIDER === 'documenso') {
+    workspace.signingProviderConnectionId = config.SIGNING_PROVIDER_CONNECTION_ID;
+  }
   state.workspaces = workspaces;
 
   const applicationClients = Array.isArray(state.applicationClients)
     ? state.applicationClients
     : [];
-  if (
-    !applicationClients.some(
-      (client) => isRecord(client) && client.id === config.BOOTSTRAP_CLIENT_ID,
-    )
-  ) {
+  const bootstrapClient = applicationClients.find(
+    (client) => isRecord(client) && client.id === config.BOOTSTRAP_CLIENT_ID,
+  );
+  if (!bootstrapClient) {
     applicationClients.push({
       id: config.BOOTSTRAP_CLIENT_ID,
       workspaceId,
@@ -110,10 +122,14 @@ try {
       connectorKey: 'azure-smoke-client',
       secretHash: config.BOOTSTRAP_SECRET_HASH,
       scopes,
+      businessDomains: ['REAL_ESTATE'],
       allowedReturnUrls: [config.BOOTSTRAP_RETURN_URL],
       status: 'ACTIVE',
       createdAt: now,
     });
+  } else if (isRecord(bootstrapClient)) {
+    // Existing bootstrap credentials are migrated to a single fail-closed business boundary.
+    bootstrapClient.businessDomains = ['REAL_ESTATE'];
   }
   state.applicationClients = applicationClients;
 

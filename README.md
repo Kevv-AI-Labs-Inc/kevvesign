@@ -22,7 +22,7 @@ Development mode uses a synthetic administrator, local private-file storage, a l
 
 ## Connect Homix Portal or another project
 
-In **Workspace → Application credentials**, choose a stable connector key, register exact HTTPS return URLs, and issue a workspace-scoped credential. The plaintext credential is shown once; only its SHA-256 hash is stored. Keep it in the source project's backend secret store—never in browser JavaScript.
+In **Workspace → Application credentials**, choose a stable connector key, select exactly one business domain (`HR` or `REAL_ESTATE`), register exact HTTPS return URLs, and issue a workspace-scoped credential. Use separate credentials for separate business domains; an HR credential cannot read or mutate real-estate templates, transactions, envelopes, or evidence, and the reverse is also true. The plaintext credential is shown once; only its SHA-256 hash is stored. Keep it in the source project's backend secret store—never in browser JavaScript.
 
 ```bash
 curl http://localhost:4100/v1/templates \
@@ -49,11 +49,13 @@ curl http://localhost:4100/v1/integration-sessions \
 
 Redirect the employee's browser to the returned `launchUrl`. The five-minute ticket is one-time, is carried in a URL fragment so it is not sent in request logs, and is exchanged for a one-hour HttpOnly session with CSRF protection. The user can return to the registered source URL from the persistent sidebar action.
 
-Scopes are `templates:read`, `templates:write`, `transactions:read`, `transactions:write`, `envelopes:read`, `envelopes:write`, `envelopes:send`, `evidence:read`, and `integration-sessions:create`. Delegated users are constrained by both their asserted role and the application's scopes. Credentials can be rotated or revoked; revocation invalidates associated sessions immediately. Envelope creation and send requests require an `Idempotency-Key` header. The old `/v1/portal-sessions` contract remains as a deprecated compatibility alias.
+Scopes are `templates:read`, `templates:write`, `transactions:read`, `transactions:write`, `envelopes:read`, `envelopes:write`, `envelopes:send`, `evidence:read`, and `integration-sessions:create`. Delegated users are constrained by their asserted role, the application's scopes, and its single business domain. Credentials can be rotated or revoked; revocation invalidates associated sessions immediately. Envelope creation and send requests require an `Idempotency-Key` header. The old `/v1/portal-sessions` contract remains as a deprecated compatibility alias.
 
 ## Select a signing engine
 
-Set `SIGNING_ENGINE_PROVIDER=native` for the local implementation or `documenso` for the adapter. Documenso mode additionally requires `DOCUMENSO_BASE_URL`, `DOCUMENSO_API_TOKEN`, and a random `DOCUMENSO_WEBHOOK_SECRET` of at least 32 characters. Configure Documenso to POST events to `/v1/signing-engine/webhooks/documenso` with that value in `X-Documenso-Secret`.
+Signing providers are selected through a workspace mapping, not by a calling application's name. `Workspace.signingProviderConnectionId` identifies a configured provider connection; a workspace without a mapping uses the native engine. The first external send copies the selected connection ID onto the envelope, so later resend, void, webhook, and evidence operations continue through the same connection even if the workspace mapping changes. Deploying the Homix Documenso instance does not automatically route a workspace to it.
+
+Each connection has a stable `SIGNING_PROVIDER_CONNECTION_ID`. Documenso connections additionally require `DOCUMENSO_BASE_URL`, `DOCUMENSO_API_TOKEN`, and a random `DOCUMENSO_WEBHOOK_SECRET` of at least 32 characters. In Azure, the API token and webhook secret must exist only in Key Vault and reach the API through managed-identity secret references. Configure Documenso to POST events to `/v1/signing-engine/webhooks/documenso/{connectionId}` with that connection's secret in `X-Documenso-Secret`; the unparameterized route remains only as a single-connection compatibility alias. To move to a different Documenso account, create a new connection ID and remap the workspace for new envelopes; keep the old connection available for already-sent envelopes.
 
 The adapter uses Documenso API v2 envelope endpoints. It creates multi-PDF envelopes, maps normalized drag/drop fields, distributes and redistributes requests, correlates provider recipients, ingests authenticated replay-safe events, downloads completed sealed PDFs, and preserves their exact bytes in the evidence package. Unsupported attachment fields fail before sending instead of being silently dropped.
 

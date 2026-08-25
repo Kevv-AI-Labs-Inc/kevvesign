@@ -197,6 +197,8 @@ export interface Workspace {
   id: string;
   name: string;
   slug: string;
+  /** Resolves this workspace to a runtime signing-engine connection. */
+  signingProviderConnectionId?: string;
   members: WorkspaceMember[];
   enabledJurisdictions: Jurisdiction[];
   createdAt: string;
@@ -210,6 +212,8 @@ export interface ApplicationClient {
   connectorKey?: string;
   secretHash: string;
   scopes: ApplicationScope[];
+  /** Business records this credential may access inside its workspace. */
+  businessDomains: BusinessDomain[];
   allowedReturnUrls: string[];
   status: 'ACTIVE' | 'REVOKED';
   createdAt: string;
@@ -358,6 +362,8 @@ export interface Envelope {
   evidencePackageId?: string;
   supersedesEnvelopeId?: string;
   signingEngine?: string;
+  /** Frozen provider connection so later workspace changes do not orphan this envelope. */
+  signingProviderConnectionId?: string;
   signingEngineEnvelopeId?: string;
   signingEngineStatus?: string;
   signingEngineSyncedAt?: string;
@@ -488,6 +494,11 @@ export const RecipientInputSchema = z.object({
 
 export const CreateEnvelopeInputSchema = z.object({
   templateId: z.string().uuid(),
+  expectedTemplateVersionId: z.string().uuid().optional(),
+  expectedTemplateSchemaHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   transactionId: z.string().uuid().optional(),
   externalReference: z.string().min(1).max(120).optional(),
   subject: z.string().min(2).max(180),
@@ -516,6 +527,9 @@ export const CreateApplicationClientInputSchema = z.object({
     .regex(/^[a-z0-9][a-z0-9-]*$/)
     .optional(),
   scopes: z.array(ApplicationScopeSchema).min(1).max(ApplicationScopeSchema.options.length),
+  businessDomains: z
+    .array(BusinessDomainSchema)
+    .length(1, 'Each application credential must belong to exactly one business domain.'),
   allowedReturnUrls: z.array(z.string().url().max(500)).max(10).default([]),
   expiresAt: z.string().datetime().optional(),
 });
@@ -563,6 +577,8 @@ export interface StaffPrincipal {
   sourceApplicationClientId?: string;
   sourceApplicationName?: string;
   delegatedScopes?: ApplicationScope[];
+  /** Absent for direct staff, which are governed by their workspace role. */
+  businessDomains?: BusinessDomain[];
   returnUrl?: string;
   identityProviderId?: string;
 }
