@@ -14,6 +14,7 @@ The system is a TypeScript modular monolith with four deployable units: the Reac
 ## State invariants
 
 - Published template versions and sent envelope content are immutable.
+- Connectors may pin an expected published template version and schema hash during envelope creation; mismatches fail atomically before an envelope is created.
 - All commands are transition-checked and repeat-prone writes require idempotency keys.
 - A routing group activates only after all required recipients in the previous group complete.
 - Completion is visible only after PDF generation, hash verification, manifest signing, and evidence commit.

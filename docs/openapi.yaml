@@ -471,6 +471,14 @@ components:
       required: [templateId, subject, expiresAt, recipients]
       properties:
         templateId: { type: string, format: uuid }
+        expectedTemplateVersionId:
+          type: string
+          format: uuid
+          description: Fail atomically when the active published version differs from this reviewed version.
+        expectedTemplateSchemaHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Fail atomically when the active published schema differs from this reviewed hash.
         transactionId: { type: string, format: uuid }
         externalReference: { type: string, maxLength: 120 }
         subject: { type: string, minLength: 2, maxLength: 180 }

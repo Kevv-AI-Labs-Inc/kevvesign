@@ -1126,6 +1126,23 @@ export class ESignService {
           409,
         );
       }
+      if (input.expectedTemplateVersionId && input.expectedTemplateVersionId !== version.id) {
+        throw new DomainError(
+          'template_version_mismatch',
+          'The active template version does not match the expected version.',
+          409,
+        );
+      }
+      if (
+        input.expectedTemplateSchemaHash &&
+        input.expectedTemplateSchemaHash !== version.schemaHash
+      ) {
+        throw new DomainError(
+          'template_schema_mismatch',
+          'The active template schema does not match the expected schema.',
+          409,
+        );
+      }
       const templateDomain = templateBusinessDomain(template);
       if (!templateDomain || templateDomain !== version.businessDomain) {
         throw new DomainError('not_found', 'Resource not found.', 404);

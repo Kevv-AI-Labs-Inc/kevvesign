@@ -494,6 +494,11 @@ export const RecipientInputSchema = z.object({
 
 export const CreateEnvelopeInputSchema = z.object({
   templateId: z.string().uuid(),
+  expectedTemplateVersionId: z.string().uuid().optional(),
+  expectedTemplateSchemaHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   transactionId: z.string().uuid().optional(),
   externalReference: z.string().min(1).max(120).optional(),
   subject: z.string().min(2).max(180),

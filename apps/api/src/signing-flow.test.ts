@@ -135,15 +135,51 @@ describe('one-email signing journey', () => {
       { roles: draft.roles, fields },
       { requestId: 'fields', ip: '127.0.0.1', userAgent: 'test' },
     );
-    await service.publishTemplate(principal, template.id, draft.id, {
+    const published = await service.publishTemplate(principal, template.id, draft.id, {
       requestId: 'publish',
       ip: '127.0.0.1',
       userAgent: 'test',
     });
+    await expect(
+      service.createEnvelope(
+        principal,
+        {
+          templateId: template.id,
+          expectedTemplateVersionId: crypto.randomUUID(),
+          expectedTemplateSchemaHash: published.schemaHash!,
+          subject: 'Reject changed version',
+          message: '',
+          expiresAt: '2027-01-01T00:00:00.000Z',
+          recipients: [{ roleId: role.id, name: 'Alex Buyer', email: 'alex@example.test' }],
+          mergeData: {},
+        },
+        'wrong-version-key',
+        { requestId: 'wrong-version', ip: '127.0.0.1', userAgent: 'test' },
+      ),
+    ).rejects.toMatchObject({ code: 'template_version_mismatch', statusCode: 409 });
+    await expect(
+      service.createEnvelope(
+        principal,
+        {
+          templateId: template.id,
+          expectedTemplateVersionId: published.id,
+          expectedTemplateSchemaHash: '0'.repeat(64),
+          subject: 'Reject changed schema',
+          message: '',
+          expiresAt: '2027-01-01T00:00:00.000Z',
+          recipients: [{ roleId: role.id, name: 'Alex Buyer', email: 'alex@example.test' }],
+          mergeData: {},
+        },
+        'wrong-schema-key',
+        { requestId: 'wrong-schema', ip: '127.0.0.1', userAgent: 'test' },
+      ),
+    ).rejects.toMatchObject({ code: 'template_schema_mismatch', statusCode: 409 });
     const envelope = await service.createEnvelope(
       principal,
       {
         templateId: template.id,
+        expectedTemplateVersionId: published.id,
+        expectedTemplateSchemaHash: published.schemaHash!,
         subject: 'Please sign synthetic offer',
         message: 'Review the attached synthetic form.',
         expiresAt: '2027-01-01T00:00:00.000Z',
