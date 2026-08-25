@@ -19,7 +19,33 @@ pins. Agent/Team Member affiliation and Team Leader responsibilities are also
 separate legal purposes. Production therefore needs up to four published template
 pins; do not swap the company name or contract purpose inside a published PDF.
 
+### Confirmed Homix inputs (2026-08-25)
+
+- Candidate PDFs exist for Realty Agent, Living Agent, Realty Team Leader, and
+  Living Team Leader in the Homix Portal repository under `output/pdf/`.
+- Current plans are Solo, Solo Pro, and Team Member. Non-producing remains a
+  Solo operational status; Holding is not a template choice.
+- Company countersigner for both entities: Si Zhang, Broker,
+  `sunnyz@homixny.com`.
+- Company countersign is mandatory and manual. It represents the company review
+  step; Portal activation occurs only after the fully completed envelope and
+  required payment are verified.
+- Public signing hostname remains `https://esign.kevv.ai`.
+- Approved synthetic recipient list:
+  `okjusthere@gmail.com`, `kertweller@gmail.com`,
+  `wellerkert@gmail.com`, and `eric.wei@homixny.com`.
+
+The candidate PDFs still require final company/counsel acceptance before they
+are published as immutable production versions.
+
 ## Production environment
+
+Current audit status (2026-08-25): Azure contains only
+`rg-kevvesign-dev`; `esign.kevv.ai` is bound to the development Web Container
+App, and Homix Portal Production has no `ESIGN_*` variables. The custom sender
+identity `esign@esign.kevv.ai` may remain the public From address, but production
+must not reuse the development application credential, database, storage,
+signing-provider secrets, or SMTP credential.
 
 1. Copy `infra/parameters.prod.example.json` to an untracked deployment parameter
    file and replace every placeholder. Do not add credentials to the file.
