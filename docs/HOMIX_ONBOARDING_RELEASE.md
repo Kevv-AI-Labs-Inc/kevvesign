@@ -15,7 +15,9 @@ Before a real onboarding envelope is created, obtain:
 - the production signing-provider account and webhook owner
 
 Homix Realty Inc. and Homix Living Inc. must remain separate templates and Portal
-pins. Do not swap the company name inside one published PDF at send time.
+pins. Agent/Team Member affiliation and Team Leader responsibilities are also
+separate legal purposes. Production therefore needs up to four published template
+pins; do not swap the company name or contract purpose inside a published PDF.
 
 ## Production environment
 
@@ -57,7 +59,8 @@ development smoke credential.
 
 ## Publish each contract
 
-For each legal entity:
+For each legal entity, publish the Agent/Team Member agreement and the Team Leader
+agreement as separate templates:
 
 1. Upload the approved, native-text, non-password-protected PDF.
 2. Set business domain `HR`, jurisdiction `NY`, and `approvalRequired=false`.
@@ -70,6 +73,11 @@ For each legal entity:
    `ESIGN_ONBOARDING_HOMIX_REALTY_*` or
    `ESIGN_ONBOARDING_HOMIX_LIVING_*` Vercel variables.
 
+Team Leader agreement pins use `ESIGN_TEAM_LEADER_HOMIX_REALTY_*` or
+`ESIGN_TEAM_LEADER_HOMIX_LIVING_*`. The Portal handoff document is authoritative
+for each purpose's exact read-only merge keys. A Team Leader agreement must never
+be sent using an Agent/Team Member pin, or vice versa.
+
 Any PDF or field-layout change requires a new version, a new schema hash, review,
 and an explicit Portal repin.
 
@@ -78,5 +86,7 @@ and an explicit Portal repin.
 Keep Portal `ONBOARDING_V2_ENFORCED=0` while running synthetic invited-agent tests
 for both legal entities, Solo and Team plans, Stripe payment, verified offline
 payment, team split, sponsor reward, evidence retrieval, and administrator
-approval. Production enforcement is a separate business decision after these
-checks pass.
+approval. Also run the Team Leader chain: application approval creates a forming
+team, Team Leader evidence unlocks recruiting, and the first Team Member evidence
+activates the team. Production enforcement is a separate business decision after
+these checks pass.
