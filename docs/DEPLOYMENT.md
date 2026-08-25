@@ -25,6 +25,12 @@ This is a development environment, not a legal or production release. Its custom
 
 Current image references are recorded in `infra/parameters.dev.json`. The Bicep template remains the source of truth for resource configuration; deployment-only credentials remain in Key Vault and are never stored in a parameters file.
 
+`infra/parameters.prod.example.json` is a deliberately non-deployable production
+handoff with placeholders. Use it with
+[`HOMIX_ONBOARDING_RELEASE.md`](HOMIX_ONBOARDING_RELEASE.md) when preparing the
+separate production environment; never promote the development resource group or
+its smoke credential into production.
+
 ## Repeatable deployment
 
 Run validation before changing Azure:

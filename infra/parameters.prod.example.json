@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "prefix": { "value": "kevvesign" },
+    "environment": { "value": "prod" },
+    "location": { "value": "eastus2" },
+    "sqlLocation": { "value": "eastus2" },
+    "sqlEntraAdminObjectId": { "value": "<entra-production-admin-group-object-id>" },
+    "sqlEntraAdminLogin": { "value": "esign-production-admins" },
+    "sqlEntraAdminPrincipalType": { "value": "Group" },
+    "operatorObjectId": { "value": "<entra-production-operator-group-object-id>" },
+    "operatorPrincipalType": { "value": "Group" },
+    "webImage": { "value": "<production-acr>.azurecr.io/esign-web:<release-tag>" },
+    "apiImage": { "value": "<production-acr>.azurecr.io/esign-api:<release-tag>" },
+    "pdfFinalizerImage": { "value": "<production-acr>.azurecr.io/esign-pdf:<release-tag>" },
+    "publicBaseUrl": { "value": "https://<approved-production-host>" },
+    "oidcProvidersJson": { "value": "[]" },
+    "acsEmailDomainName": { "value": "<approved-production-email-domain>" },
+    "acsEmailSender": { "value": "esign@<approved-production-email-domain>" },
+    "signingEngineProvider": { "value": "documenso" },
+    "signingProviderConnectionId": { "value": "homix-documenso-production-v1" },
+    "documensoBaseUrl": { "value": "https://<approved-production-documenso-host>" }
+  }
+}
