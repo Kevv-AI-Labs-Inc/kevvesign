@@ -4,6 +4,7 @@ coverage/
 .env
 .env.local
 *.local
+*.local.json
 .data/
 .uploads/
 .outbox/

@@ -108,6 +108,11 @@ export type FieldOption = z.infer<typeof FieldOptionSchema>;
 
 export const TemplateFieldSchema = z.object({
   id: z.string().uuid(),
+  fieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_.-]*$/)
+    .max(160)
+    .optional(),
   documentId: z.string().uuid(),
   page: z.number().int().min(1),
   type: FieldTypeSchema,

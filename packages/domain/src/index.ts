@@ -332,7 +332,18 @@ export function validateTemplateForPublication(version: TemplateVersion): void {
   }
   const roleIds = new Set(version.roles.map((role) => role.id));
   const documentIds = new Set(version.documents.map((document) => document.id));
+  const fieldKeys = new Set<string>();
   for (const field of version.fields) {
+    if (field.fieldKey) {
+      if (fieldKeys.has(field.fieldKey)) {
+        details.push({
+          field: `fields.${field.id}.fieldKey`,
+          message: `Field key ${field.fieldKey} must be unique within a template version.`,
+          code: 'duplicate',
+        });
+      }
+      fieldKeys.add(field.fieldKey);
+    }
     if (!documentIds.has(field.documentId)) {
       details.push({
         field: `fields.${field.id}`,

@@ -1005,6 +1005,18 @@ function TemplateEditorPage() {
             <>
               <h2>{activeField.label}</h2>
               <label>
+                Stable field key
+                <input
+                  value={activeField.fieldKey ?? ''}
+                  placeholder="agent.ica_signature"
+                  onChange={(event) =>
+                    updateField(activeField.id, {
+                      fieldKey: event.target.value.trim() || undefined,
+                    })
+                  }
+                />
+              </label>
+              <label>
                 Label
                 <input
                   value={activeField.label}

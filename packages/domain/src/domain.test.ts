@@ -164,4 +164,67 @@ describe('template geometry and publication', () => {
     };
     expect(() => validateTemplateForPublication(version)).toThrowError(DomainError);
   });
+
+  it('blocks duplicate stable field keys', () => {
+    const documentId = '22222222-2222-4222-8222-222222222222';
+    const roleId = '33333333-3333-4333-8333-333333333333';
+    const first: TemplateVersion['fields'][number] = {
+      id: '44444444-4444-4444-8444-444444444444',
+      documentId,
+      page: 1,
+      type: 'signature',
+      roleId,
+      label: 'Agent signature',
+      required: true,
+      readOnly: false,
+      sensitive: false,
+      tabIndex: 0,
+      rect: { x: 0.1, y: 0.1, width: 0.3, height: 0.05, rotation: 0 },
+    };
+    const version: TemplateVersion = {
+      id: '11111111-1111-4111-8111-111111111111',
+      version: 1,
+      status: 'DRAFT',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceName: 'Source',
+      licenseOwner: 'Owner',
+      edition: '1',
+      effectiveDate: '2026-01-01',
+      jurisdiction: 'NY',
+      businessDomain: 'REAL_ESTATE',
+      approvalRequired: false,
+      retentionPolicyId: 'real-estate-7y',
+      documents: [
+        {
+          id: documentId,
+          name: 'form.pdf',
+          objectKey: 'templates/form.pdf',
+          sha256: 'a'.repeat(64),
+          pageCount: 1,
+          order: 0,
+          retentionClass: 'real-estate-7y',
+          detectedMime: 'application/pdf',
+        },
+      ],
+      roles: [{ id: roleId, name: 'Agent', kind: 'signer', routingOrder: 1 }],
+      fields: [],
+    };
+    version.fields = [
+      { ...first, fieldKey: 'agent.ica_signature' },
+      {
+        ...first,
+        id: '22222222-2222-4222-8222-222222222222',
+        fieldKey: 'agent.ica_signature',
+      },
+    ];
+    try {
+      validateTemplateForPublication(version);
+      throw new Error('Expected publication validation to fail.');
+    } catch (error) {
+      expect(error).toBeInstanceOf(DomainError);
+      expect((error as DomainError).details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'duplicate' })]),
+      );
+    }
+  });
 });

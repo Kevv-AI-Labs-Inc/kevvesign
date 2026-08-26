@@ -19,6 +19,23 @@ const EnvironmentSchema = z.object({
   BOOTSTRAP_CLIENT_ID: z.string().uuid(),
   BOOTSTRAP_SECRET_HASH: z.string().regex(/^[a-f0-9]{64}$/),
   BOOTSTRAP_RETURN_URL: z.string().url(),
+  WORKSPACE_ID: z.string().uuid().default('11111111-1111-4111-8111-111111111111'),
+  WORKSPACE_MEMBER_ID: z.string().uuid().default('22222222-2222-4222-8222-222222222222'),
+  WORKSPACE_NAME: z.string().min(2).max(160).default('Kevv eSign Operations'),
+  WORKSPACE_SLUG: z
+    .string()
+    .min(2)
+    .max(80)
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .default('kevv-esign'),
+  BOOTSTRAP_CLIENT_NAME: z.string().min(2).max(120).default('Azure deployment smoke client'),
+  BOOTSTRAP_CONNECTOR_KEY: z
+    .string()
+    .min(2)
+    .max(80)
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .default('azure-smoke-client'),
+  BOOTSTRAP_BUSINESS_DOMAIN: z.enum(['HR', 'REAL_ESTATE']).default('REAL_ESTATE'),
   SIGNING_ENGINE_PROVIDER: z.enum(['native', 'documenso']).default('native'),
   SIGNING_PROVIDER_CONNECTION_ID: z
     .string()
@@ -31,8 +48,8 @@ const EnvironmentSchema = z.object({
 const config = EnvironmentSchema.parse(process.env);
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const sqlDirectory = path.resolve(scriptDirectory, '../../../infra/sql');
-const workspaceId = '11111111-1111-4111-8111-111111111111';
-const memberId = '22222222-2222-4222-8222-222222222222';
+const workspaceId = config.WORKSPACE_ID;
+const memberId = config.WORKSPACE_MEMBER_ID;
 const now = new Date().toISOString();
 const scopes = [
   'templates:read',
@@ -85,8 +102,8 @@ try {
   if (!workspaces.some((workspace) => isRecord(workspace) && workspace.id === workspaceId)) {
     workspaces.push({
       id: workspaceId,
-      name: 'Kevv eSign Operations',
-      slug: 'kevv-esign',
+      name: config.WORKSPACE_NAME,
+      slug: config.WORKSPACE_SLUG,
       enabledJurisdictions: ['NY', 'NJ', 'CA'],
       createdAt: now,
       members: [
@@ -106,6 +123,10 @@ try {
   if (isRecord(workspace) && config.SIGNING_ENGINE_PROVIDER === 'documenso') {
     workspace.signingProviderConnectionId = config.SIGNING_PROVIDER_CONNECTION_ID;
   }
+  if (isRecord(workspace)) {
+    workspace.name = config.WORKSPACE_NAME;
+    workspace.slug = config.WORKSPACE_SLUG;
+  }
   state.workspaces = workspaces;
 
   const applicationClients = Array.isArray(state.applicationClients)
@@ -118,18 +139,23 @@ try {
     applicationClients.push({
       id: config.BOOTSTRAP_CLIENT_ID,
       workspaceId,
-      name: 'Azure deployment smoke client',
-      connectorKey: 'azure-smoke-client',
+      name: config.BOOTSTRAP_CLIENT_NAME,
+      connectorKey: config.BOOTSTRAP_CONNECTOR_KEY,
       secretHash: config.BOOTSTRAP_SECRET_HASH,
       scopes,
-      businessDomains: ['REAL_ESTATE'],
+      businessDomains: [config.BOOTSTRAP_BUSINESS_DOMAIN],
       allowedReturnUrls: [config.BOOTSTRAP_RETURN_URL],
       status: 'ACTIVE',
       createdAt: now,
     });
   } else if (isRecord(bootstrapClient)) {
-    // Existing bootstrap credentials are migrated to a single fail-closed business boundary.
-    bootstrapClient.businessDomains = ['REAL_ESTATE'];
+    bootstrapClient.name = config.BOOTSTRAP_CLIENT_NAME;
+    bootstrapClient.connectorKey = config.BOOTSTRAP_CONNECTOR_KEY;
+    bootstrapClient.secretHash = config.BOOTSTRAP_SECRET_HASH;
+    bootstrapClient.scopes = scopes;
+    bootstrapClient.businessDomains = [config.BOOTSTRAP_BUSINESS_DOMAIN];
+    bootstrapClient.allowedReturnUrls = [config.BOOTSTRAP_RETURN_URL];
+    bootstrapClient.status = 'ACTIVE';
   }
   state.applicationClients = applicationClients;
 
@@ -140,10 +166,14 @@ try {
       'UPDATE dbo.platform_state SET state_json = @stateJson, updated_at = SYSUTCDATETIME() WHERE singleton_id = 1',
     );
 
-  await pool.request().input('workspaceId', sql.UniqueIdentifier, workspaceId)
+  await pool
+    .request()
+    .input('workspaceId', sql.UniqueIdentifier, workspaceId)
+    .input('workspaceSlug', sql.NVarChar(80), config.WORKSPACE_SLUG)
+    .input('workspaceName', sql.NVarChar(160), config.WORKSPACE_NAME)
     .query(`IF NOT EXISTS (SELECT 1 FROM esign.workspaces WHERE id = @workspaceId)
       INSERT esign.workspaces (id, slug, display_name, status)
-      VALUES (@workspaceId, 'kevv-esign', N'Kevv eSign Operations', 'ACTIVE')`);
+      VALUES (@workspaceId, @workspaceSlug, @workspaceName, 'ACTIVE')`);
 
   await pool
     .request()
@@ -165,12 +195,21 @@ try {
     .input('secretHash', sql.Char(64), config.BOOTSTRAP_SECRET_HASH)
     .input('scopes', sql.NVarChar(sql.MAX), JSON.stringify(scopes))
     .input('returnUrls', sql.NVarChar(sql.MAX), JSON.stringify([config.BOOTSTRAP_RETURN_URL]))
+    .input('clientName', sql.NVarChar(120), config.BOOTSTRAP_CLIENT_NAME)
     .input('createdAt', sql.DateTime2, new Date(now))
     .query(`IF NOT EXISTS (SELECT 1 FROM esign.application_clients WHERE id = @clientId)
       INSERT esign.application_clients
         (id, workspace_id, display_name, secret_hash, scopes_json, allowed_return_urls_json, status, created_at)
       VALUES
-        (@clientId, @workspaceId, N'Azure deployment smoke client', @secretHash, @scopes, @returnUrls, 'ACTIVE', @createdAt)`);
+        (@clientId, @workspaceId, @clientName, @secretHash, @scopes, @returnUrls, 'ACTIVE', @createdAt)
+      ELSE
+        UPDATE esign.application_clients
+        SET display_name = @clientName,
+            secret_hash = @secretHash,
+            scopes_json = @scopes,
+            allowed_return_urls_json = @returnUrls,
+            status = 'ACTIVE'
+        WHERE id = @clientId`);
 
   process.stdout.write(
     `${JSON.stringify({

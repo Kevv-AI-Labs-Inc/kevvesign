@@ -33,6 +33,21 @@ param operatorPrincipalType string = sqlEntraAdminPrincipalType
 @description('Tenant ID for the Entra SQL administrator.')
 param tenantId string = tenant().tenantId
 
+@description('Additional exact IPv4 addresses allowed to reach Azure SQL, such as a temporary operator IP during bootstrap. NAT egress is added automatically.')
+param sqlAllowedIpAddresses array = []
+
+@description('Use a dedicated VNet and NAT Gateway so production Container Apps have one stable outbound IP.')
+param enableNatEgress bool = environment == 'prod'
+
+@description('Address space used by the production Container Apps virtual network.')
+param containerAppsVnetAddressPrefix string = '10.42.0.0/16'
+
+@description('Dedicated delegated subnet used by the Container Apps environment.')
+param containerAppsSubnetAddressPrefix string = '10.42.0.0/24'
+
+@description('Container Apps environment resource name. Set a new name when replacing an environment network boundary.')
+param containerEnvironmentName string = 'cae-${prefix}-${environment}'
+
 @description('Container image references supplied by CI after the first image build.')
 param webImage string
 param apiImage string
@@ -58,6 +73,8 @@ param documensoApiToken string = ''
 param documensoWebhookSecret string = ''
 @description('Customer-managed Azure Communication Services Email domain.')
 param acsEmailDomainName string = 'esign.kevv.ai'
+@description('Optional existing verified ACS Email domain resource ID. When supplied, production links it instead of provisioning a duplicate domain.')
+param existingAcsEmailDomainResourceId string = ''
 @description('Optional sender override. Leave blank to use esign@ on the customer-managed email domain.')
 param acsEmailSender string = ''
 
@@ -246,7 +263,7 @@ resource emailDomain 'Microsoft.Communication/emailServices/domains@2025-09-01' 
   }
 }
 
-resource customEmailDomain 'Microsoft.Communication/emailServices/domains@2025-09-01' = {
+resource customEmailDomain 'Microsoft.Communication/emailServices/domains@2025-09-01' = if (empty(existingAcsEmailDomainResourceId)) {
   parent: emailService
   name: acsEmailDomainName
   location: 'global'
@@ -257,7 +274,7 @@ resource customEmailDomain 'Microsoft.Communication/emailServices/domains@2025-0
   }
 }
 
-resource esignSenderUsername 'Microsoft.Communication/emailServices/domains/senderUsernames@2025-09-01' = {
+resource esignSenderUsername 'Microsoft.Communication/emailServices/domains/senderUsernames@2025-09-01' = if (empty(existingAcsEmailDomainResourceId)) {
   parent: customEmailDomain
   name: 'esign'
   properties: {
@@ -275,7 +292,7 @@ resource communicationService 'Microsoft.Communication/communicationServices@202
     disableLocalAuth: false
     linkedDomains: [
       emailDomain.id
-      customEmailDomain.id
+      empty(existingAcsEmailDomainResourceId) ? customEmailDomain!.id : existingAcsEmailDomainResourceId
     ]
     publicNetworkAccess: 'Enabled'
   }
@@ -365,12 +382,69 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   }
 }
 
-resource allowAzureServices 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
-  parent: sqlServer
-  name: 'AllowAllWindowsAzureIps'
+resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = if (enableNatEgress) {
+  name: 'pip-nat-${stem}'
+  location: location
+  tags: tags
+  sku: { name: 'Standard' }
   properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
+    publicIPAllocationMethod: 'Static'
+    publicIPAddressVersion: 'IPv4'
+  }
+}
+
+resource natGateway 'Microsoft.Network/natGateways@2024-05-01' = if (enableNatEgress) {
+  name: 'nat-${stem}'
+  location: location
+  tags: tags
+  sku: { name: 'Standard' }
+  properties: {
+    idleTimeoutInMinutes: 10
+    publicIpAddresses: [{ id: natPublicIp!.id }]
+  }
+}
+
+resource containerAppsVnet 'Microsoft.Network/virtualNetworks@2024-05-01' = if (enableNatEgress) {
+  name: 'vnet-${stem}'
+  location: location
+  tags: tags
+  properties: {
+    addressSpace: { addressPrefixes: [containerAppsVnetAddressPrefix] }
+  }
+}
+
+resource containerAppsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = if (enableNatEgress) {
+  parent: containerAppsVnet
+  name: 'snet-container-apps'
+  properties: {
+    addressPrefix: containerAppsSubnetAddressPrefix
+    delegations: [
+      {
+        name: 'container-apps-environment'
+        properties: { serviceName: 'Microsoft.App/environments' }
+      }
+    ]
+    natGateway: { id: natGateway.id }
+  }
+}
+
+resource sqlFirewallRules 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = [
+  for (ipAddress, index) in sqlAllowedIpAddresses: {
+    parent: sqlServer
+    name: 'AllowExactIp${index}'
+    properties: {
+      startIpAddress: ipAddress
+      endIpAddress: ipAddress
+    }
+  }
+]
+
+resource sqlNatFirewallRule 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = if (enableNatEgress) {
+  parent: sqlServer
+  name: 'AllowContainerAppsNat'
+  properties: {
+    startIpAddress: natPublicIp!.properties.ipAddress
+    endIpAddress: natPublicIp!.properties.ipAddress
   }
 }
 
@@ -399,7 +473,7 @@ resource database 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
 }
 
 resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: 'cae-${stem}'
+  name: containerEnvironmentName
   location: location
   tags: tags
   properties: {
@@ -413,6 +487,10 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
     workloadProfiles: [
       { name: 'Consumption', workloadProfileType: 'Consumption' }
     ]
+    vnetConfiguration: enableNatEgress ? {
+      infrastructureSubnetId: containerAppsSubnet.id
+      internal: false
+    } : {}
   }
 }
 
@@ -470,6 +548,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
           image: apiImage
           env: concat([
             { name: 'NODE_ENV', value: 'production' }
+            { name: 'AZURE_CLIENT_ID', value: workloadIdentity.properties.clientId }
             { name: 'PORT', value: '4100' }
             { name: 'DATABASE_DRIVER', value: 'azure-sql' }
             { name: 'STORAGE_DRIVER', value: 'azure' }
@@ -533,7 +612,7 @@ resource web 'Microsoft.App/containerApps@2024-03-01' = {
           resources: { cpu: json('0.25'), memory: '0.5Gi' }
         }
       ]
-      scale: { minReplicas: 0, maxReplicas: 3 }
+      scale: { minReplicas: environment == 'prod' ? 1 : 0, maxReplicas: 3 }
     }
   }
   dependsOn: [registryPull]
@@ -586,6 +665,7 @@ resource pdfJob 'Microsoft.App/jobs@2025-07-01' = {
           image: pdfFinalizerImage
           env: [
             { name: 'NODE_ENV', value: 'production' }
+            { name: 'AZURE_CLIENT_ID', value: finalizerIdentity.properties.clientId }
             { name: 'AZURE_SQL_CONNECTION_STRING', value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Initial Catalog=${database.name};Authentication=Active Directory Integrated;Client Id=${finalizerIdentity.properties.clientId};Encrypt=True;TrustServerCertificate=False;' }
             { name: 'AZURE_STORAGE_ACCOUNT_URL', value: storage.properties.primaryEndpoints.blob }
             { name: 'AZURE_KEY_VAULT_URL', value: keyVault.properties.vaultUri }
@@ -699,3 +779,4 @@ output containerRegistryServer string = registry.properties.loginServer
 output acsEmailSender string = resolvedAcsEmailSender
 output workloadIdentityName string = workloadIdentity.name
 output finalizerIdentityName string = finalizerIdentity.name
+output natOutboundIp string = enableNatEgress ? natPublicIp!.properties.ipAddress : ''
