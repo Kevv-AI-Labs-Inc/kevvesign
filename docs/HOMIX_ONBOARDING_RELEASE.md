@@ -19,10 +19,10 @@ pins. Agent/Team Member affiliation and Team Leader responsibilities are also
 separate legal purposes. Production therefore needs up to four published template
 pins; do not swap the company name or contract purpose inside a published PDF.
 
-### Confirmed Homix inputs (2026-08-25)
+### Confirmed Homix inputs (2026-08-26)
 
-- Candidate PDFs exist for Realty Agent, Living Agent, Realty Team Leader, and
-  Living Team Leader in the Homix Portal repository under `output/pdf/`.
+- Approved PDFs for Realty Agent, Living Agent, Realty Team Leader, and Living
+  Team Leader are published as four immutable production template versions.
 - Current plans are Solo, Solo Pro, and Team Member. Non-producing remains a
   Solo operational status; Holding is not a template choice.
 - Company countersigner for both entities: Si Zhang, Broker,
@@ -35,31 +35,43 @@ pins; do not swap the company name or contract purpose inside a published PDF.
   `okjusthere@gmail.com`, `kertweller@gmail.com`,
   `wellerkert@gmail.com`, and `eric.wei@homixny.com`.
 
-The candidate PDFs still require final company/counsel acceptance before they
-are published as immutable production versions.
-
 ## Production environment
 
-Current audit status (2026-08-25): Azure contains only
-`rg-kevvesign-dev`; `esign.kevv.ai` is bound to the development Web Container
-App, and Homix Portal Production has no `ESIGN_*` variables. The custom sender
-identity `esign@esign.kevv.ai` may remain the public From address, but production
-must not reuse the development application credential, database, storage,
-signing-provider secrets, or SMTP credential.
+Current audit status (2026-08-26): the isolated production resource group
+`rg-kevvesign-prod` is deployed with its own Container Apps environment, managed
+identities, VNet/NAT egress, Azure SQL database, storage, Key Vault, and HR
+application credential. Homix Portal Production has all required `ESIGN_*`
+template pins and countersigner settings. `ONBOARDING_V2_ENFORCED` remains `0`.
+
+`esign.kevv.ai` is still bound to the development Web Container App. Before a
+Portal envelope is created, move the DNS record and custom-domain binding to the
+production Web Container App, issue its managed certificate, and verify `/health`
+through the public hostname. The production stack must continue using its own
+application credential, database, storage, identities, and secrets.
 
 1. Copy `infra/parameters.prod.example.json` to an untracked deployment parameter
    file and replace every placeholder. Do not add credentials to the file.
 2. Create a dedicated production resource group. Do not reuse
    `rg-kevvesign-dev` or its SQL, storage, Key Vault, smoke credential, or signing
    provider connection.
+   The already verified `esign.kevv.ai` ACS Email domain may be linked by resource
+   ID so production keeps the same public From address; this does not reuse the
+   development ACS connection string or application credential.
 3. Supply `bootstrapSessionSecret`, Documenso API token, and webhook secret only
    through secure deployment inputs. Rotate them into the production Key Vault
    immediately after bootstrap.
 4. Run Bicep build, resource-group validation, and `what-if` before creation.
+   Azure SQL must use exact IP firewall rules or private networking; do not use
+   the broad `Allow Azure Services` rule. A temporary operator IP may be added
+   for schema bootstrap and must be removed immediately afterward.
 5. Complete DNS, email-domain verification, private storage, SQL backup/restore,
    monitoring/alerts, malware scanning, and retention/legal-hold acceptance.
 6. Run `pnpm verify` and synthetic signing tests before any real PDF or email is
    used.
+
+Steps 1-4 and the application/template configuration are complete. DNS/custom
+domain cutover, one manual signer/countersigner/evidence cycle, and final
+operational acceptance remain open.
 
 The example parameter file intentionally cannot be deployed unchanged. This
 prevents an accidental production stack from inheriting development identities,
@@ -116,3 +128,10 @@ approval. Also run the Team Leader chain: application approval creates a forming
 team, Team Leader evidence unlocks recruiting, and the first Team Member evidence
 activates the team. Production enforcement is a separate business decision after
 these checks pass.
+
+The Portal rollback-only production smoke already passes Solo, Team Member with
+the Team Leader as Sponsor, Team Member with a different Sponsor, the default 10%
+Team Split with no Team Cap, and administrator-verified offline payment. These
+checks validate routing and finance logic but do not replace the remaining manual
+recipient signature, Si Zhang countersignature, sealed PDF, and evidence retrieval
+cycle for each legal template purpose.
