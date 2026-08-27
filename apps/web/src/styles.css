@@ -1928,15 +1928,26 @@ input[type='file'] {
   font-size: clamp(0.54rem, 1vw, 0.72rem);
 }
 .sign-field button {
+  container-type: inline-size;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
+  overflow: hidden;
   font-weight: 850;
 }
 .signature-value {
+  display: block;
+  width: 100%;
+  overflow: hidden;
   font-family: 'Snell Roundhand', 'Segoe Script', cursive;
-  font-size: 1.15rem;
+  font-size: clamp(0.5rem, 5cqi, 1rem);
+  line-height: 1;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+.sign-field.type-initials .signature-value {
+  font-size: clamp(0.6rem, 12cqi, 1rem);
 }
 .sign-checkbox {
   width: 100%;

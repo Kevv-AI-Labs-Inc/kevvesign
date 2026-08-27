@@ -10,13 +10,14 @@ import { CryptographyClient, KeyClient, KnownSignatureAlgorithms } from '@azure/
 import { ServiceBusClient } from '@azure/service-bus';
 import { BlobServiceClient } from '@azure/storage-blob';
 import type { BlobImmutabilityPolicyMode } from '@azure/storage-blob';
-import type {
-  AuditEvent,
-  Envelope,
-  EvidenceFile,
-  EvidencePackage,
-  PlatformState,
-  WebhookEvent,
+import {
+  typedSignatureInitials,
+  type AuditEvent,
+  type Envelope,
+  type EvidenceFile,
+  type EvidencePackage,
+  type PlatformState,
+  type WebhookEvent,
 } from '@esign/contracts';
 import {
   DomainError,
@@ -489,7 +490,13 @@ export function completedFieldDisplayValue(
     ? envelope.recipients.find((candidate) => candidate.values[fieldId] !== undefined)
     : envelope.recipients.find((candidate) => candidate.roleId === field.roleId);
   if (!recipient) return undefined;
-  if (field.type === 'signature' || field.type === 'initials') return recipient.signature?.value;
+  if (field.type === 'signature' || field.type === 'initials') {
+    const value = recipient.signature?.value;
+    if (field.type === 'initials' && value && !value.startsWith('data:image/')) {
+      return typedSignatureInitials(value);
+    }
+    return value;
+  }
   const value = recipient.values[fieldId];
   if (Array.isArray(value)) return value.join(', ');
   if (typeof value === 'boolean') return value ? '✓' : '';
@@ -516,14 +523,27 @@ export async function renderCompletedPdf(
     const height = field.rect.height * page.getHeight();
     const width = field.rect.width * page.getWidth();
     const y = page.getHeight() - field.rect.y * page.getHeight() - height;
-    const size = Math.max(8, Math.min(height * 0.55, field.type === 'signature' ? 18 : 12));
-    page.drawText(value.startsWith('data:image/') ? 'Signed electronically' : value, {
+    const renderedValue = value.startsWith('data:image/')
+      ? field.type === 'initials'
+        ? 'Initialed electronically'
+        : 'Signed electronically'
+      : value;
+    let size = Math.max(
+      8,
+      Math.min(height * 0.55, field.type === 'signature' || field.type === 'initials' ? 18 : 12),
+    );
+    const maxWidth = Math.max(10, width - 4);
+    if (field.type === 'signature' || field.type === 'initials') {
+      const measuredWidth = font.widthOfTextAtSize(renderedValue, size);
+      if (measuredWidth > maxWidth) size = Math.max(6, (size * maxWidth) / measuredWidth);
+    }
+    page.drawText(renderedValue, {
       x: x + 2,
       y: y + Math.max(2, (height - size) / 2),
       size,
       font,
       color: rgb(0.04, 0.16, 0.14),
-      maxWidth: Math.max(10, width - 4),
+      maxWidth,
     });
   }
   const certificate = pdf.addPage([612, 792]);
