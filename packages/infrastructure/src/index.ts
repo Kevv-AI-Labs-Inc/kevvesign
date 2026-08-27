@@ -479,16 +479,24 @@ export async function inspectPdf(bytes: Uint8Array): Promise<PdfMetadata> {
   };
 }
 
-function fieldDisplayValue(envelope: Envelope, fieldId: string): string | undefined {
+export function completedFieldDisplayValue(
+  envelope: Envelope,
+  fieldId: string,
+): string | undefined {
   const field = envelope.fields.find((candidate) => candidate.id === fieldId);
   if (!field) return undefined;
-  const recipient = envelope.recipients.find((candidate) => candidate.roleId === field.roleId);
+  const recipient = field.readOnly
+    ? envelope.recipients.find((candidate) => candidate.values[fieldId] !== undefined)
+    : envelope.recipients.find((candidate) => candidate.roleId === field.roleId);
   if (!recipient) return undefined;
   if (field.type === 'signature' || field.type === 'initials') return recipient.signature?.value;
   const value = recipient.values[fieldId];
   if (Array.isArray(value)) return value.join(', ');
   if (typeof value === 'boolean') return value ? '✓' : '';
-  return value;
+  if (!value) return value;
+  return field.label.startsWith('Summary: ')
+    ? `${field.label.slice('Summary: '.length)}: ${value}`
+    : value;
 }
 
 export async function renderCompletedPdf(
@@ -499,7 +507,7 @@ export async function renderCompletedPdf(
   const pdf = await PDFDocument.load(source, { ignoreEncryption: false });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   for (const field of envelope.fields.filter((candidate) => candidate.documentId === documentId)) {
-    const value = fieldDisplayValue(envelope, field.id);
+    const value = completedFieldDisplayValue(envelope, field.id);
     if (!value) continue;
     const page = pdf.getPage(field.page - 1);
     if (!page)

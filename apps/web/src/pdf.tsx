@@ -403,13 +403,19 @@ function SigningPageCanvas({
             <label className="sign-checkbox">
               <input
                 type="checkbox"
+                aria-label={field.label}
+                title={field.label}
                 checked={values[field.id] === true}
                 onChange={(event) => onValue(field.id, event.target.checked)}
               />
-              <span>{field.label}</span>
             </label>
           ) : field.readOnly ? (
-            <span className="merge-value">{String(values[field.id] ?? '')}</span>
+            <span className="merge-value">
+              {field.label.startsWith('Summary: ') && values[field.id]
+                ? `${field.label.slice('Summary: '.length)}: `
+                : ''}
+              {String(values[field.id] ?? '')}
+            </span>
           ) : (
             <input
               aria-label={field.label}
