@@ -105,13 +105,27 @@ describe('one-email signing journey', () => {
         id: crypto.randomUUID(),
         documentId: document.id,
         page: 1,
+        type: 'merge' as const,
+        roleId: null,
+        label: 'Property address',
+        required: false,
+        readOnly: true,
+        sensitive: false,
+        tabIndex: 0,
+        mergeKey: 'property.address',
+        rect: { x: 0.1, y: 0.1, width: 0.5, height: 0.04, rotation: 0 as const },
+      },
+      {
+        id: crypto.randomUUID(),
+        documentId: document.id,
+        page: 1,
         type: 'full_name' as const,
         roleId: role.id,
         label: 'Legal name',
         required: true,
         readOnly: false,
         sensitive: false,
-        tabIndex: 0,
+        tabIndex: 1,
         rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.04, rotation: 0 as const },
       },
       {
@@ -124,7 +138,7 @@ describe('one-email signing journey', () => {
         required: true,
         readOnly: false,
         sensitive: false,
-        tabIndex: 1,
+        tabIndex: 2,
         rect: { x: 0.1, y: 0.7, width: 0.3, height: 0.05, rotation: 0 as const },
       },
     ];
@@ -184,7 +198,7 @@ describe('one-email signing journey', () => {
         message: 'Review the attached synthetic form.',
         expiresAt: '2027-01-01T00:00:00.000Z',
         recipients: [{ roleId: role.id, name: 'Alex Buyer', email: 'alex@example.test' }],
-        mergeData: {},
+        mergeData: { 'property.address': '123 Main Street' },
       },
       'create-key',
       { requestId: 'create', ip: '127.0.0.1', userAgent: 'test' },
@@ -235,7 +249,10 @@ describe('one-email signing journey', () => {
       headers: { cookie: cookies, 'x-csrf-token': csrf, origin: config.WEB_ORIGIN },
       payload: {
         expectedEnvelopeVersion: exchangeBody.data.envelope.version,
-        values: { [fields[0]!.id]: 'Alex Buyer' },
+        values: {
+          [fields[0]!.id]: '123 Main Street',
+          [fields[1]!.id]: 'Alex Buyer',
+        },
         signature: {
           kind: 'typed',
           value: 'Alex Buyer',
@@ -244,6 +261,18 @@ describe('one-email signing journey', () => {
       },
     });
     expect(progress.statusCode).toBe(200);
+
+    const tamperedMerge = await server.inject({
+      method: 'POST',
+      url: '/v1/signing/progress',
+      headers: { cookie: cookies, 'x-csrf-token': csrf, origin: config.WEB_ORIGIN },
+      payload: {
+        expectedEnvelopeVersion: exchangeBody.data.envelope.version,
+        values: { [fields[0]!.id]: '999 Changed Street' },
+      },
+    });
+    expect(tamperedMerge.statusCode).toBe(403);
+    expect(tamperedMerge.json().error.code).toBe('field_forbidden');
 
     const finish = await server.inject({
       method: 'POST',

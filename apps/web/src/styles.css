@@ -1888,6 +1888,22 @@ input[type='file'] {
   max-width: 100%;
   margin: auto;
 }
+.pdf-load-error {
+  width: min(100%, 760px);
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  margin: auto;
+  padding: 32px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  text-align: center;
+}
+.pdf-load-error span {
+  color: var(--muted);
+}
 .signing-page {
   max-width: 100%;
 }
