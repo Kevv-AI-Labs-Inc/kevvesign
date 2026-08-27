@@ -106,6 +106,23 @@ describe('PDF and signatures', () => {
     expect(completedFieldDisplayValue(envelope, fieldId)).toBe('Team cap: No cap');
   });
 
+  it('renders typed initials instead of the full adopted signature', () => {
+    const fieldId = crypto.randomUUID();
+    const roleId = crypto.randomUUID();
+    const envelope = {
+      fields: [{ id: fieldId, roleId, readOnly: false, type: 'initials', label: 'Initials' }],
+      recipients: [
+        {
+          roleId,
+          values: {},
+          signature: { kind: 'typed', value: 'Homix Geometry UAT Agent' },
+        },
+      ],
+    } as unknown as Parameters<typeof completedFieldDisplayValue>[0];
+
+    expect(completedFieldDisplayValue(envelope, fieldId)).toBe('HGUA');
+  });
+
   it('accepts a valid PDF and rejects non-PDF bytes', async () => {
     const pdf = await PDFDocument.create();
     pdf.addPage([612, 792]);

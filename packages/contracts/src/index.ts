@@ -61,6 +61,18 @@ export const FieldTypeSchema = z.enum([
 ]);
 export type FieldType = z.infer<typeof FieldTypeSchema>;
 
+export function typedSignatureInitials(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return '';
+  const tokens = normalized.split(/\s+/);
+  if (tokens.length === 1) return Array.from(normalized).slice(0, 4).join('');
+  return tokens
+    .map((token) => token.match(/[\p{L}\p{N}]/u)?.[0] ?? '')
+    .join('')
+    .toUpperCase()
+    .slice(0, 6);
+}
+
 export const EnvelopeStatusSchema = z.enum([
   'DRAFT',
   'PREPARED',

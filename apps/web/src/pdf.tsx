@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import type { FieldType, FieldValue, TemplateField } from '@esign/contracts';
+import {
+  typedSignatureInitials,
+  type FieldType,
+  type FieldValue,
+  type TemplateField,
+} from '@esign/contracts';
 import { Check, PenLine } from 'lucide-react';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${workerUrl}?v=20260827.1`;
@@ -391,7 +396,13 @@ function SigningPageCanvas({
             <button onClick={onSignature}>
               {signature ? (
                 <span className="signature-value">
-                  {signature.startsWith('data:') ? 'Signed ✓' : signature}
+                  {signature.startsWith('data:')
+                    ? field.type === 'initials'
+                      ? 'Initialed ✓'
+                      : 'Signed ✓'
+                    : field.type === 'initials'
+                      ? typedSignatureInitials(signature)
+                      : signature}
                 </span>
               ) : (
                 <>
