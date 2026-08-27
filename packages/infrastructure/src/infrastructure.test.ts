@@ -8,6 +8,7 @@ import {
   JsonFileRepository,
   LocalEmailPort,
   LocalObjectStore,
+  completedFieldDisplayValue,
   inspectPdf,
   signWebhook,
   verifyWebhook,
@@ -86,6 +87,25 @@ describe('local durable substitutes', () => {
 });
 
 describe('PDF and signatures', () => {
+  it('renders read-only merge values from the recipient snapshot', () => {
+    const fieldId = crypto.randomUUID();
+    const roleId = crypto.randomUUID();
+    const envelope = {
+      fields: [
+        {
+          id: fieldId,
+          roleId: null,
+          readOnly: true,
+          type: 'merge',
+          label: 'Summary: Team cap',
+        },
+      ],
+      recipients: [{ roleId, values: { [fieldId]: 'No cap' } }],
+    } as unknown as Parameters<typeof completedFieldDisplayValue>[0];
+
+    expect(completedFieldDisplayValue(envelope, fieldId)).toBe('Team cap: No cap');
+  });
+
   it('accepts a valid PDF and rejects non-PDF bytes', async () => {
     const pdf = await PDFDocument.create();
     pdf.addPage([612, 792]);
