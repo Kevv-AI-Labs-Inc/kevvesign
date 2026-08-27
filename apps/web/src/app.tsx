@@ -1984,11 +1984,17 @@ function SigningPage() {
   }
   async function save(showNotice = true) {
     if (!context) return;
+    const editableFieldIds = new Set(
+      context.fields.filter((field) => !field.readOnly).map((field) => field.id),
+    );
+    const editableValues = Object.fromEntries(
+      Object.entries(values).filter(([fieldId]) => editableFieldIds.has(fieldId)),
+    );
     const next = await api<import('@esign/contracts').SigningContext>('/v1/signing/progress', {
       method: 'POST',
       body: JSON.stringify({
         expectedEnvelopeVersion: context.envelope.version,
-        values,
+        values: editableValues,
         ...(signature ? { signature } : {}),
       }),
     });
@@ -2101,6 +2107,17 @@ function SigningPage() {
         </div>
       </SignerFrame>
     );
+  const requiredFields = context.fields.filter((field) => field.required && !field.readOnly);
+  const completedFields = requiredFields.filter((field) => {
+    if (field.type === 'signature' || field.type === 'initials') return Boolean(signature);
+    const value = values[field.id];
+    return (
+      value !== undefined &&
+      value !== '' &&
+      value !== false &&
+      !(Array.isArray(value) && value.length === 0)
+    );
+  });
   return (
     <div className="signing-workspace">
       <header className="signing-header">
@@ -2127,8 +2144,8 @@ function SigningPage() {
           <span className="eyebrow">Your checklist</span>
           <h2>Finish every marked field</h2>
           <div className="progress-ring">
-            <strong>{Object.keys(values).length}</strong>
-            <span>of {context.fields.filter((field) => field.required).length}</span>
+            <strong>{completedFields.length}</strong>
+            <span>of {requiredFields.length}</span>
           </div>
           <p>
             Required fields are outlined in green. Your progress can be saved and resumed from the

@@ -264,8 +264,11 @@ export function SigningDocument({
   const [pages, setPages] = useState<
     Array<{ page: pdfjs.PDFPageProxy; width: number; height: number }>
   >([]);
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
+    setLoadError(false);
     const task = pdfjs.getDocument({ url, withCredentials: true });
     void task.promise
       .then(async (document) => {
@@ -284,13 +287,27 @@ export function SigningDocument({
         if (active) setPages(loaded);
       })
       .catch((error: unknown) => {
-        if (active) console.error('Unable to load signing PDF.', error);
+        if (active) {
+          setLoadError(true);
+          console.error('Unable to load signing PDF.', error);
+        }
       });
     return () => {
       active = false;
       void task.destroy();
     };
-  }, [url]);
+  }, [url, attempt]);
+  if (loadError) {
+    return (
+      <div className="pdf-load-error" role="alert">
+        <strong>The document could not be displayed.</strong>
+        <span>Reload the secure document before continuing.</span>
+        <button className="button secondary" onClick={() => setAttempt((value) => value + 1)}>
+          Reload document
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="pdf-stack signing-pdf">
       {pages.map((item, index) => (

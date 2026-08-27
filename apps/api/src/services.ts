@@ -26,6 +26,7 @@ import {
   appendAudit,
   applyMergeData,
   assertIdempotency,
+  canonicalJson,
   createSecret,
   findEnvelope,
   findSession,
@@ -2026,12 +2027,18 @@ export class ESignService {
           .map((field) => field.id),
       );
       for (const [fieldId, value] of Object.entries(input.values)) {
-        if (!allowedIds.has(fieldId))
+        if (!allowedIds.has(fieldId)) {
+          const field = envelope.fields.find((candidate) => candidate.id === fieldId);
+          const unchangedReadOnlyValue =
+            field?.readOnly === true &&
+            canonicalJson(value) === canonicalJson(recipient.values[fieldId]);
+          if (unchangedReadOnlyValue) continue;
           throw new DomainError(
             'field_forbidden',
             'A field is not assigned to this recipient.',
             403,
           );
+        }
         recipient.values[fieldId] = value;
       }
       if (input.signature) {
