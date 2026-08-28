@@ -10,6 +10,7 @@ import {
   LocalObjectStore,
   completedFieldDisplayValue,
   inspectPdf,
+  renderCompletedPdf,
   signWebhook,
   verifyWebhook,
 } from './index';
@@ -121,6 +122,45 @@ describe('PDF and signatures', () => {
     } as unknown as Parameters<typeof completedFieldDisplayValue>[0];
 
     expect(completedFieldDisplayValue(envelope, fieldId)).toBe('HGUA');
+  });
+
+  it('renders checked checkboxes with a WinAnsi-safe mark', async () => {
+    const fieldId = crypto.randomUUID();
+    const roleId = crypto.randomUUID();
+    const documentId = crypto.randomUUID();
+    const pdf = await PDFDocument.create();
+    pdf.addPage([612, 792]);
+    const source = await pdf.save();
+    const envelope = {
+      id: crypto.randomUUID(),
+      subject: 'Checkbox finalization test',
+      fields: [
+        {
+          id: fieldId,
+          documentId,
+          page: 1,
+          type: 'checkbox',
+          roleId,
+          label: 'Acknowledgement',
+          required: true,
+          readOnly: false,
+          rect: { x: 0.1, y: 0.1, width: 0.05, height: 0.05, rotation: 0 },
+        },
+      ],
+      recipients: [
+        {
+          roleId,
+          name: 'UAT Signer',
+          email: 'uat@example.test',
+          status: 'COMPLETED',
+          values: { [fieldId]: true },
+        },
+      ],
+    } as unknown as Parameters<typeof renderCompletedPdf>[1];
+
+    expect(completedFieldDisplayValue(envelope, fieldId)).toBe('X');
+    const completed = await renderCompletedPdf(source, envelope, documentId);
+    await expect(inspectPdf(completed)).resolves.toMatchObject({ pageCount: 2 });
   });
 
   it('accepts a valid PDF and rejects non-PDF bytes', async () => {
