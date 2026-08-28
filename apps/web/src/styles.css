@@ -1949,6 +1949,17 @@ input[type='file'] {
 .sign-field.type-initials .signature-value {
   font-size: clamp(0.6rem, 12cqi, 1rem);
 }
+.sign-field .signed-date-action {
+  justify-content: flex-start;
+  padding-inline: 6px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.sign-field .signed-date-action svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
 .sign-checkbox {
   width: 100%;
   height: 100%;

@@ -7,7 +7,8 @@ import {
   type FieldValue,
   type TemplateField,
 } from '@esign/contracts';
-import { Check, PenLine } from 'lucide-react';
+import { CalendarDays, Check, PenLine } from 'lucide-react';
+import { localSigningDate } from './signing-date';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `${workerUrl}?v=20260827.1`;
 
@@ -409,6 +410,17 @@ function SigningPageCanvas({
                   <PenLine /> {field.label}
                 </>
               )}
+            </button>
+          ) : field.type === 'signed_date' ? (
+            <button
+              type="button"
+              className="signed-date-action"
+              aria-label={field.label}
+              title={field.label}
+              onClick={() => onValue(field.id, localSigningDate())}
+            >
+              <CalendarDays />
+              {values[field.id] ? `${String(values[field.id])} ✓` : "Use today's date"}
             </button>
           ) : field.type === 'checkbox' ? (
             <label className="sign-checkbox">
