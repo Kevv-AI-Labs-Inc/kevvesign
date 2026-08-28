@@ -183,7 +183,12 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
 resource objectsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
   name: 'esign-objects'
-  properties: { publicAccess: 'None' }
+  properties: union(
+    { publicAccess: 'None' },
+    environment == 'prod' ? {
+      immutableStorageWithVersioning: { enabled: true }
+    } : {}
+  )
 }
 
 resource recoveryContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
@@ -698,13 +703,13 @@ resource blobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }
 
-resource finalizerBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, finalizerIdentity.id, 'blob-contributor')
+resource finalizerBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, finalizerIdentity.id, 'blob-data-owner')
   scope: storage
   properties: {
     principalId: finalizerIdentity.properties.principalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
   }
 }
 

@@ -499,7 +499,8 @@ export function completedFieldDisplayValue(
   }
   const value = recipient.values[fieldId];
   if (Array.isArray(value)) return value.join(', ');
-  if (typeof value === 'boolean') return value ? '✓' : '';
+  // Standard PDF fonts use WinAnsi and cannot encode the Unicode checkmark.
+  if (typeof value === 'boolean') return value ? 'X' : '';
   if (!value) return value;
   return field.label.startsWith('Summary: ')
     ? `${field.label.slice('Summary: '.length)}: ${value}`
