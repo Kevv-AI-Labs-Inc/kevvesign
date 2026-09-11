@@ -12,6 +12,8 @@ export function SignaturePad({
 }) {
   const [mode, setMode] = useState<'typed' | 'drawn'>('typed');
   const [typed, setTyped] = useState(name);
+  const [intentAccepted, setIntentAccepted] = useState(false);
+  const [hasInk, setHasInk] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
   const drawing = useRef(false);
   useEffect(() => {
@@ -46,14 +48,22 @@ export function SignaturePad({
     const value = point(event);
     context?.lineTo(value.x, value.y);
     context?.stroke();
+    const pixels = context?.getImageData(
+      0,
+      0,
+      event.currentTarget.width,
+      event.currentTarget.height,
+    ).data;
+    setHasInk(Boolean(pixels?.some((value, index) => index % 4 === 3 && value > 16)));
   }
   function finish() {
     drawing.current = false;
   }
   function confirm() {
+    if (!intentAccepted) return;
     if (mode === 'typed') {
       if (typed.trim()) adopt({ kind: 'typed', value: typed.trim() });
-    } else if (canvas.current)
+    } else if (canvas.current && hasInk)
       adopt({ kind: 'drawn', value: canvas.current.toDataURL('image/png') });
   }
   return (
@@ -72,7 +82,13 @@ export function SignaturePad({
           <button className={mode === 'typed' ? 'active' : ''} onClick={() => setMode('typed')}>
             <Type /> Type
           </button>
-          <button className={mode === 'drawn' ? 'active' : ''} onClick={() => setMode('drawn')}>
+          <button
+            className={mode === 'drawn' ? 'active' : ''}
+            onClick={() => {
+              if (mode !== 'drawn') setHasInk(false);
+              setMode('drawn');
+            }}
+          >
             <PenLine /> Draw
           </button>
         </div>
@@ -80,6 +96,7 @@ export function SignaturePad({
           <div className="typed-signature">
             <input
               aria-label="Typed signature"
+              maxLength={200}
               value={typed}
               onChange={(event) => setTyped(event.target.value)}
             />
@@ -99,6 +116,7 @@ export function SignaturePad({
                 const context = canvas.current?.getContext('2d');
                 if (canvas.current)
                   context?.clearRect(0, 0, canvas.current.width, canvas.current.height);
+                setHasInk(false);
               }}
             >
               Clear
@@ -106,7 +124,11 @@ export function SignaturePad({
           </div>
         )}
         <label className="intent-check">
-          <input type="checkbox" required defaultChecked />
+          <input
+            type="checkbox"
+            checked={intentAccepted}
+            onChange={(event) => setIntentAccepted(event.target.checked)}
+          />
           <span>
             I intend this electronic mark to be my signature for the records assigned to me.
           </span>
@@ -115,7 +137,11 @@ export function SignaturePad({
           <button className="button secondary" onClick={close}>
             Cancel
           </button>
-          <button className="button primary" onClick={confirm}>
+          <button
+            className="button primary"
+            onClick={confirm}
+            disabled={!intentAccepted || (mode === 'typed' ? !typed.trim() : !hasInk)}
+          >
             <Check /> Adopt signature
           </button>
         </div>

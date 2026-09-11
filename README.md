@@ -73,3 +73,13 @@ See [PLAN.md](PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/
 ## License and source
 
 Copyright 2026 Kevv AI Labs Inc. Kevv eSign is released under [AGPL-3.0-or-later](LICENSE). A running modified network service must offer its corresponding source as required by section 13. The application links back to this source repository; third-party acknowledgements are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Delegated real-estate ownership and native completion
+
+REAL_ESTATE integration/legacy Portal sessions can access only envelopes and transactions created by their own stable `applicationClientId + actor.subject`. New resources receive `delegatedOwner` on creation; clients cannot choose or change it in a request. Ownership applies to lists, dashboard counts, details, evidence downloads, sending/resending/voiding, transaction association, deep links, and creation idempotency. Existing unowned real-estate resources are hidden from delegated sessions. Direct staff and trusted backend application credentials retain their existing workspace/domain permissions; HR onboarding behavior is unchanged. Do not expose backend credentials in agent browsers.
+
+This is private envelope/transaction access, not a team-sharing or private-template feature. Templates remain a shared workspace library. Customer-specific uploads, explicit sharing, and recipient delivery of completed copies still require product integration before general agent rollout.
+
+Native signatures require explicit adoption intent and a nonblank typed name or visible PNG mark. PNG decoding is bounded before inflation. Signed-date fields accept real `YYYY-MM-DD` calendar dates; the UI supplies the signer's local date. Completed PDFs embed actual drawn marks and a bundled Noto CJK font subset, including certificate text. Both API and PDF finalizer images include the font and its license. See `packages/infrastructure/assets/README.md` for provenance and the tested font encoder bridge.
+
+Regression checks: `pnpm verify` and `pnpm exec playwright test --workers=1`. `tests/e2e/signing.spec.ts` covers two recipients, two PDFs, consent, blank/cleared drawings, save/reload, Chinese names, sequential activation, evidence verification, and signed PDF downloads on all configured browser profiles. These local native-engine checks do not certify production Documenso, email delivery, real payments, physical-device input, or load behavior.

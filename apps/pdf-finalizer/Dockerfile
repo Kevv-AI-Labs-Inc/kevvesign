@@ -22,5 +22,6 @@ COPY --from=build --chown=node:node /app/packages/domain/dist ./packages/domain/
 COPY --from=build --chown=node:node /app/packages/domain/node_modules ./packages/domain/node_modules
 COPY --from=build --chown=node:node /app/packages/infrastructure/package.json ./packages/infrastructure/package.json
 COPY --from=build --chown=node:node /app/packages/infrastructure/dist ./packages/infrastructure/dist
+COPY --from=build --chown=node:node /app/packages/infrastructure/assets ./packages/infrastructure/assets
 COPY --from=build --chown=node:node /app/packages/infrastructure/node_modules ./packages/infrastructure/node_modules
 CMD ["node", "apps/pdf-finalizer/dist/main.js"]

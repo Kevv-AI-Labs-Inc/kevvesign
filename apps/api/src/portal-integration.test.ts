@@ -151,6 +151,207 @@ describe('pluggable delegated staff access', () => {
   const servers: Array<Awaited<ReturnType<typeof buildServer>>> = [];
   afterEach(async () => Promise.all(servers.splice(0).map((server) => server.close())));
 
+  it('isolates delegated real-estate envelopes, transactions, evidence, and deep links by stable actor and client', async () => {
+    const fixtures = domainFixtureState();
+    const roleId = crypto.randomUUID();
+    fixtures.realEstateTemplate.versions[0]!.roles.push({
+      id: roleId,
+      name: 'Buyer',
+      kind: 'signer',
+      routingOrder: 1,
+    });
+    const repository = new InMemoryRepository(fixtures.state);
+    const root = await mkdtemp(path.join(os.tmpdir(), 'esign-ownership-'));
+    const objects = new LocalObjectStore(path.join(root, 'objects'));
+    const server = await buildServer(config, {
+      repository,
+      objects,
+      email: new NoopEmail(),
+      signer: new HmacManifestSigner(config.SESSION_SECRET),
+      scanner: new LocalFileScanner(),
+    });
+    servers.push(server);
+    const scopes = [
+      'integration-sessions:create',
+      'templates:read',
+      'transactions:read',
+      'transactions:write',
+      'envelopes:read',
+      'envelopes:write',
+      'envelopes:send',
+      'evidence:read',
+    ];
+    async function client(name: string) {
+      const result = await server.inject({
+        method: 'POST',
+        url: '/v1/application-clients',
+        payload: {
+          name,
+          scopes,
+          businessDomains: ['REAL_ESTATE'],
+          allowedReturnUrls: ['https://crm.example.test/esign/return'],
+        },
+      });
+      expect(result.statusCode).toBe(201);
+      return result.json().data;
+    }
+    const firstClient = await client('First CRM');
+    const secondClient = await client('Second CRM');
+    async function session(credential: string, subject: string) {
+      const issued = await server.inject({
+        method: 'POST',
+        url: '/v1/integration-sessions',
+        headers: { 'x-esign-key': credential },
+        payload: {
+          actor: {
+            subject,
+            email: 'shared-email@example.invalid',
+            displayName: 'Same mutable name',
+            role: 'preparer',
+          },
+          intent: { kind: 'dashboard' },
+          returnUrl: 'https://crm.example.test/esign/return',
+        },
+      });
+      expect(issued.statusCode).toBe(201);
+      const ticket = new URLSearchParams(new URL(issued.json().data.launchUrl).hash.slice(1)).get(
+        'ticket',
+      );
+      const exchanged = await server.inject({
+        method: 'POST',
+        url: '/v1/integration-sessions/exchange',
+        payload: { ticket },
+      });
+      expect(exchanged.statusCode).toBe(200);
+      return {
+        cookie: cookies(exchanged),
+        'x-csrf-token': exchanged.cookies.find((c) => c.name === 'esign_staff_csrf')!.value,
+      };
+    }
+    const a = await session(firstClient.credential, 'agent:a');
+    const b = await session(firstClient.credential, 'agent:b');
+    const otherClient = await session(secondClient.credential, 'agent:a');
+    const transactionResponse = await server.inject({
+      method: 'POST',
+      url: '/v1/transactions',
+      headers: a,
+      payload: { kind: 'PROPERTY', name: 'Agent A private listing', jurisdiction: 'NY' },
+    });
+    expect(transactionResponse.statusCode).toBe(201);
+    const transactionId = transactionResponse.json().data.id;
+    const payload = {
+      templateId: fixtures.realEstateTemplate.id,
+      transactionId,
+      subject: 'Private buyer packet',
+      message: '',
+      expiresAt: '2027-09-11T12:00:00.000Z',
+      recipients: [{ roleId, name: 'Buyer', email: 'buyer@example.invalid' }],
+    };
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/envelopes',
+      headers: { ...a, 'idempotency-key': 'same-client-key' },
+      payload,
+    });
+    expect(created.statusCode).toBe(201);
+    const envelope = created.json().data;
+    expect(envelope.delegatedOwner).toEqual({
+      applicationClientId: firstClient.client.id,
+      subject: 'agent:a',
+    });
+    const retry = await server.inject({
+      method: 'POST',
+      url: '/v1/envelopes',
+      headers: { ...a, 'idempotency-key': 'same-client-key' },
+      payload,
+    });
+    expect(retry.json().data.id).toBe(envelope.id);
+    for (const headers of [b, otherClient]) {
+      for (const url of ['/v1/envelopes', '/v1/transactions']) {
+        const result = await server.inject({ method: 'GET', url, headers });
+        expect(result.statusCode).toBe(200);
+        expect(result.json().data).toEqual([]);
+      }
+      const dashboard = await server.inject({ method: 'GET', url: '/v1/dashboard', headers });
+      expect(dashboard.json().data.recentEnvelopes).toEqual([]);
+      for (const suffix of ['', '/evidence', '/evidence/signed.pdf']) {
+        const result = await server.inject({
+          method: 'GET',
+          url: `/v1/envelopes/${envelope.id}${suffix}`,
+          headers,
+        });
+        expect(result.statusCode).toBe(404);
+      }
+      for (const [suffix, body] of [
+        ['/send', {}],
+        ['/void', { reason: 'Not authorized' }],
+        [`/recipients/${envelope.recipients[0].id}/resend`, {}],
+      ] as const) {
+        const result = await server.inject({
+          method: 'POST',
+          url: `/v1/envelopes/${envelope.id}${suffix}`,
+          headers: { ...headers, 'idempotency-key': 'send-other' },
+          payload: body,
+        });
+        expect(result.statusCode).toBe(404);
+      }
+      const attach = await server.inject({
+        method: 'POST',
+        url: '/v1/envelopes',
+        headers: { ...headers, 'idempotency-key': 'same-client-key' },
+        payload,
+      });
+      expect(attach.statusCode).toBe(404);
+    }
+    const legacy = await server.inject({
+      method: 'GET',
+      url: `/v1/envelopes/${fixtures.realEstateEnvelope.id}`,
+      headers: a,
+    });
+    expect(legacy.statusCode).toBe(404);
+    const ownList = await server.inject({ method: 'GET', url: '/v1/envelopes', headers: a });
+    expect(ownList.json().data.map((item: Envelope) => item.id)).toEqual([envelope.id]);
+    const ownDetails = await server.inject({
+      method: 'GET',
+      url: `/v1/envelopes/${envelope.id}`,
+      headers: a,
+    });
+    expect(ownDetails.statusCode).toBe(200);
+    const directAdmin = await server.inject({ method: 'GET', url: `/v1/envelopes/${envelope.id}` });
+    expect(directAdmin.statusCode).toBe(200);
+    for (const [credential, subject, status] of [
+      [firstClient.credential, 'agent:a', 201],
+      [firstClient.credential, 'agent:b', 404],
+      [secondClient.credential, 'agent:a', 404],
+    ] as const) {
+      const deepLink = await server.inject({
+        method: 'POST',
+        url: '/v1/integration-sessions',
+        headers: { 'x-esign-key': credential },
+        payload: {
+          actor: {
+            subject,
+            email: 'shared-email@example.invalid',
+            displayName: 'Agent',
+            role: 'preparer',
+          },
+          intent: { kind: 'view-envelope', envelopeId: envelope.id },
+          returnUrl: 'https://crm.example.test/esign/return',
+        },
+      });
+      expect(deepLink.statusCode).toBe(status);
+    }
+    // Different agents can safely reuse the same client-generated idempotency key.
+    const independent = await server.inject({
+      method: 'POST',
+      url: '/v1/envelopes',
+      headers: { ...b, 'idempotency-key': 'same-client-key' },
+      payload: { ...payload, transactionId: undefined },
+    });
+    expect(independent.statusCode).toBe(201);
+    expect(independent.json().data.id).not.toBe(envelope.id);
+  });
+
   it('uses an exact return URL, a one-time fragment ticket, scoped CSRF, and dual attribution', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'esign-integration-'));
     const repository = new InMemoryRepository(seedState());

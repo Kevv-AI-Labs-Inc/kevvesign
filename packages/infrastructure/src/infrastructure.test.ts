@@ -2,7 +2,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PNG } from 'pngjs';
 import {
   HmacManifestSigner,
   JsonFileRepository,
@@ -189,4 +190,96 @@ describe('PDF and signatures', () => {
       verifyWebhook('secret', timestamp, '{}', signature, new Date('2026-01-01T01:00:00Z')),
     ).toBe(false);
   });
+});
+
+it('preserves drawn ink in the completed PDF and embeds Chinese text in fields and certificates', async () => {
+  const source = await PDFDocument.create();
+  source.addPage([612, 792]);
+  const png = new PNG({ width: 32, height: 12 });
+  png.data.fill(0);
+  for (let x = 0; x < 32; x++) {
+    const offset = (6 * 32 + x) * 4;
+    png.data.set([18, 60, 51, 255], offset);
+  }
+  const documentId = crypto.randomUUID();
+  const roleId = crypto.randomUUID();
+  const signatureId = crypto.randomUUID();
+  const nameId = crypto.randomUUID();
+  const envelope = {
+    id: crypto.randomUUID(),
+    subject: '客户签署 — 房屋买卖文件',
+    completedAt: '2026-09-11T14:00:00Z',
+    fields: [
+      {
+        id: signatureId,
+        documentId,
+        page: 1,
+        type: 'signature',
+        roleId,
+        label: 'Signature',
+        rect: { x: 0.1, y: 0.2, width: 0.4, height: 0.1, rotation: 0 },
+      },
+      {
+        id: nameId,
+        documentId,
+        page: 1,
+        type: 'full_name',
+        roleId,
+        label: 'Name',
+        rect: { x: 0.1, y: 0.1, width: 0.4, height: 0.1, rotation: 0 },
+      },
+    ],
+    recipients: [
+      {
+        roleId,
+        name: '测试客户',
+        email: 'qa@example.invalid',
+        status: 'COMPLETED',
+        values: { [nameId]: '测试客户' },
+        signature: {
+          kind: 'drawn',
+          value: `data:image/png;base64,${PNG.sync.write(png).toString('base64')}`,
+        },
+      },
+    ],
+  } as unknown as Parameters<typeof renderCompletedPdf>[1];
+  const result = await PDFDocument.load(
+    await renderCompletedPdf(await source.save(), envelope, documentId),
+  );
+  expect(result.getPageCount()).toBe(2);
+  const streams = result.context
+    .enumerateIndirectObjects()
+    .map(([, object]) => object)
+    .filter((object): object is PDFRawStream => object instanceof PDFRawStream);
+  const image = streams.find(
+    (stream) =>
+      stream.dict.get(PDFName.of('Subtype'))?.toString() === '/Image' &&
+      stream.dict.get(PDFName.of('ColorSpace'))?.toString() === '/DeviceRGB',
+  );
+  expect(image).toBeDefined();
+  expect(
+    Array.from(
+      decodePDFRawStream(image!)
+        .decode()
+        .slice(6 * 32 * 3, 6 * 32 * 3 + 3),
+    ),
+  ).toEqual([18, 60, 51]);
+  const unicodeMaps = streams
+    .map((stream) => Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1'))
+    .filter((stream) => stream.includes('beginbfchar'))
+    .join('')
+    .toLowerCase();
+  for (const character of '测试客户房屋买卖文件')
+    expect(unicodeMaps).toContain(character.charCodeAt(0).toString(16));
+  envelope.recipients[0]!.signature = {
+    kind: 'typed',
+    value: '测试客户',
+    intentText: 'I intend to sign.',
+    adoptedAt: envelope.completedAt!,
+  };
+  envelope.recipients = Array.from({ length: 50 }, () => structuredClone(envelope.recipients[0]!));
+  const many = await PDFDocument.load(
+    await renderCompletedPdf(await source.save(), envelope, documentId),
+  );
+  expect(many.getPageCount()).toBe(3);
 });

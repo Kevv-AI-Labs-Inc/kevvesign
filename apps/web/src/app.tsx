@@ -1962,9 +1962,17 @@ function SigningPage() {
     [token],
   );
   useEffect(() => {
+    let active = true;
     void api<{ valid: boolean }>(`/v1/invitations/${encodeURIComponent(token)}`)
-      .then((status) => (status.valid ? exchange() : setPhase('unavailable')))
-      .catch(() => setPhase('unavailable'));
+      .then((status) => {
+        if (active) return status.valid ? exchange() : setPhase('unavailable');
+      })
+      .catch(() => {
+        if (active) setPhase('unavailable');
+      });
+    return () => {
+      active = false;
+    };
   }, [token, exchange]);
   async function consent() {
     if (!context) return;
