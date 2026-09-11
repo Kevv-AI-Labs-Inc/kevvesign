@@ -1,3 +1,4 @@
+import { isValidSigningDate, type DelegatedOwner } from '@esign/contracts';
 import { randomUUID } from 'node:crypto';
 import type {
   ApplicationClient,
@@ -50,7 +51,7 @@ import {
   type SigningEngine,
   type SigningEngineEnvelope,
 } from '@esign/domain';
-import { inspectPdf } from '@esign/infrastructure';
+import { inspectPdf, validateSignatureMark } from '@esign/infrastructure';
 
 const DISCLOSURE = {
   version: 'ESIGN-UETA-2026-08-01',
@@ -97,6 +98,47 @@ function requireBusinessDomain(
     conceal ? 'Resource not found.' : 'Application credential cannot access this business domain.',
     conceal ? 404 : 403,
   );
+}
+
+function requiresDelegatedOwner(principal: StaffPrincipal, domain: BusinessDomain): boolean {
+  return domain === 'REAL_ESTATE' && ['integration', 'portal'].includes(actorType(principal));
+}
+
+function delegatedOwner(
+  principal: StaffPrincipal,
+  domain: BusinessDomain,
+): DelegatedOwner | undefined {
+  if (!requiresDelegatedOwner(principal, domain)) return undefined;
+  if (!principal.sourceApplicationClientId)
+    throw new DomainError('forbidden', 'Delegated identity is unavailable.', 403);
+  return { applicationClientId: principal.sourceApplicationClientId, subject: principal.id };
+}
+
+function canAccessOwnedResource(
+  principal: StaffPrincipal,
+  domain: BusinessDomain,
+  resource: { delegatedOwner?: DelegatedOwner },
+): boolean {
+  if (!canAccessBusinessDomain(principal, domain)) return false;
+  if (!requiresDelegatedOwner(principal, domain)) return true;
+  return Boolean(
+    principal.sourceApplicationClientId &&
+    resource.delegatedOwner?.applicationClientId === principal.sourceApplicationClientId &&
+    resource.delegatedOwner.subject === principal.id,
+  );
+}
+
+function requireOwnedResource(
+  principal: StaffPrincipal,
+  domain: BusinessDomain,
+  resource: { delegatedOwner?: DelegatedOwner },
+): void {
+  if (!canAccessOwnedResource(principal, domain, resource))
+    throw new DomainError('not_found', 'Resource not found.', 404);
+}
+
+function requireEnvelopeAccess(principal: StaffPrincipal, envelope: Envelope): void {
+  requireOwnedResource(principal, envelope.businessDomain, envelope);
 }
 
 function transactionBusinessDomain(kind: Transaction['kind']): BusinessDomain {
@@ -528,7 +570,10 @@ export class ESignService {
       }
       if (input.intent.kind === 'view-envelope') {
         const envelope = findEnvelope(state, principal.workspaceId, input.intent.envelopeId);
-        requireBusinessDomain(principal, envelope.businessDomain, true);
+        requireEnvelopeAccess(
+          { ...principal, id: input.actor.subject, actorType: 'integration' },
+          envelope,
+        );
       }
       const now = this.clock.now();
       const expiresAt = new Date(now.getTime() + this.launchSessionTtlSeconds * 1000).toISOString();
@@ -1033,7 +1078,7 @@ export class ESignService {
       state.transactions.filter(
         (item) =>
           item.workspaceId === principal.workspaceId &&
-          canAccessBusinessDomain(principal, transactionBusinessDomain(item.kind)),
+          canAccessOwnedResource(principal, transactionBusinessDomain(item.kind), item),
       ),
     );
   }
@@ -1046,7 +1091,9 @@ export class ESignService {
     requirePermission(principal, 'transaction.manage');
     requireBusinessDomain(principal, transactionBusinessDomain(input.kind));
     const now = this.clock.now().toISOString();
+    const owner = delegatedOwner(principal, transactionBusinessDomain(input.kind));
     const transaction: Transaction = {
+      ...(owner ? { delegatedOwner: owner } : {}),
       id: newId(),
       workspaceId: principal.workspaceId,
       kind: input.kind,
@@ -1092,7 +1139,7 @@ export class ESignService {
       state.envelopes.filter(
         (envelope) =>
           envelope.workspaceId === principal.workspaceId &&
-          canAccessBusinessDomain(principal, envelope.businessDomain),
+          canAccessOwnedResource(principal, envelope.businessDomain, envelope),
       ),
     );
   }
@@ -1101,7 +1148,7 @@ export class ESignService {
     requirePermission(principal, 'envelope.read');
     return this.repository.read((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       return structuredClone(envelope);
     });
   }
@@ -1149,7 +1196,8 @@ export class ESignService {
         throw new DomainError('not_found', 'Resource not found.', 404);
       }
       requireBusinessDomain(principal, version.businessDomain);
-      const idempotencyOperation = `create-envelope:${version.businessDomain}`;
+      const owner = delegatedOwner(principal, version.businessDomain);
+      const idempotencyOperation = `create-envelope:${version.businessDomain}${owner ? `:${owner.applicationClientId}:${owner.subject}` : ''}`;
       const replay = assertIdempotency(
         state,
         principal.workspaceId,
@@ -1159,13 +1207,13 @@ export class ESignService {
       );
       if (replay) {
         const envelope = findEnvelope(state, principal.workspaceId, (replay as { id: string }).id);
-        requireBusinessDomain(principal, envelope.businessDomain, true);
+        requireEnvelopeAccess(principal, envelope);
         return structuredClone(envelope);
       }
       if (input.transactionId) {
         const transaction = findTransaction(state, principal.workspaceId, input.transactionId);
         const transactionDomain = transactionBusinessDomain(transaction.kind);
-        requireBusinessDomain(principal, transactionDomain, true);
+        requireOwnedResource(principal, transactionDomain, transaction);
         if (transactionDomain !== version.businessDomain) {
           throw new DomainError(
             'business_domain_mismatch',
@@ -1231,6 +1279,7 @@ export class ESignService {
       });
       const now = this.clock.now().toISOString();
       const envelope: Envelope = {
+        ...(owner ? { delegatedOwner: owner } : {}),
         id: newId(),
         workspaceId: principal.workspaceId,
         templateId: template.id,
@@ -1294,7 +1343,7 @@ export class ESignService {
     requirePermission(principal, 'envelope.approve');
     return this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       if (envelope.status !== 'APPROVAL_PENDING') {
         throw new DomainError('invalid_transition', 'Envelope is not awaiting approval.', 409);
       }
@@ -1326,7 +1375,7 @@ export class ESignService {
       throw new DomainError('idempotency_required', 'Idempotency-Key is required.', 400);
     const connection = await this.repository.read((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       return this.signingConnection(
         state,
         principal.workspaceId,
@@ -1339,7 +1388,7 @@ export class ESignService {
     }
     const result = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       const replay = assertIdempotency(
         state,
         principal.workspaceId,
@@ -1428,7 +1477,7 @@ export class ESignService {
     const { connectionId, engine } = connection;
     const prepared = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       if (
         envelope.signingProviderConnectionId &&
         envelope.signingProviderConnectionId !== connectionId
@@ -1506,7 +1555,7 @@ export class ESignService {
       );
       const updated = await this.repository.write((state) => {
         const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-        requireBusinessDomain(principal, envelope.businessDomain, true);
+        requireEnvelopeAccess(principal, envelope);
         if (envelope.signingProviderConnectionId !== connectionId) {
           throw new DomainError(
             'signing_provider_mismatch',
@@ -1601,7 +1650,7 @@ export class ESignService {
     } catch (error) {
       await this.repository.write((state) => {
         const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-        requireBusinessDomain(principal, envelope.businessDomain, true);
+        requireEnvelopeAccess(principal, envelope);
         if (envelope.signingProviderConnectionId !== connectionId) {
           throw new DomainError(
             'signing_provider_mismatch',
@@ -1661,7 +1710,7 @@ export class ESignService {
     requirePermission(principal, 'envelope.send');
     const external = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
       if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
         throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
@@ -1704,7 +1753,7 @@ export class ESignService {
     }
     const invitation = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
       if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
         throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
@@ -1739,7 +1788,7 @@ export class ESignService {
       throw new DomainError('reason_required', 'A void reason is required.', 422);
     const external = await this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       if (
         ![
           'DRAFT',
@@ -1778,7 +1827,7 @@ export class ESignService {
     }
     return this.repository.write((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       if (external && envelope.signingProviderConnectionId !== external.connection.connectionId) {
         throw new DomainError(
           'signing_provider_mismatch',
@@ -2026,6 +2075,7 @@ export class ESignService {
           .filter((field) => field.roleId === recipient.roleId && !field.readOnly)
           .map((field) => field.id),
       );
+      if (input.signature) validateSignatureMark(input.signature);
       for (const [fieldId, value] of Object.entries(input.values)) {
         if (!allowedIds.has(fieldId)) {
           const field = envelope.fields.find((candidate) => candidate.id === fieldId);
@@ -2039,8 +2089,16 @@ export class ESignService {
             403,
           );
         }
-        recipient.values[fieldId] = value;
+        const field = envelope.fields.find((candidate) => candidate.id === fieldId)!;
+        if (field.type === 'signed_date' && value !== '' && !isValidSigningDate(value)) {
+          throw new DomainError(
+            'invalid_date',
+            'Signed date must be a valid date (YYYY-MM-DD).',
+            422,
+          );
+        }
       }
+      Object.assign(recipient.values, input.values);
       if (input.signature) {
         recipient.signature = { ...input.signature, adoptedAt: this.clock.now().toISOString() };
       }
@@ -2076,6 +2134,7 @@ export class ESignService {
       );
       if (!envelope || !recipient)
         throw new DomainError('recipient_session_invalid', 'Signing session is unavailable.', 401);
+      if (recipient.signature) validateSignatureMark(recipient.signature);
       const details = validateRecipientCompletion(envelope.fields, recipient);
       if (details.length > 0)
         throw new DomainError(
@@ -2226,7 +2285,7 @@ export class ESignService {
     requirePermission(principal, 'evidence.read');
     return this.repository.read((state) => {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
-      requireBusinessDomain(principal, envelope.businessDomain, true);
+      requireEnvelopeAccess(principal, envelope);
       if (!envelope.evidencePackageId)
         throw new DomainError('evidence_pending', 'Evidence is not finalized.', 409);
       const evidence = state.evidencePackages.find(
@@ -2458,7 +2517,7 @@ export class ESignService {
       const envelopes = state.envelopes.filter(
         (candidate) =>
           candidate.workspaceId === principal.workspaceId &&
-          canAccessBusinessDomain(principal, candidate.businessDomain),
+          canAccessOwnedResource(principal, candidate.businessDomain, candidate),
       );
       const delegatedTemplateAccess = principal.delegatedScopes?.some((scope) =>
         ['templates:read', 'templates:write'].includes(scope),

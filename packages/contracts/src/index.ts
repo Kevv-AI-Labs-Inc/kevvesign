@@ -61,6 +61,13 @@ export const FieldTypeSchema = z.enum([
 ]);
 export type FieldType = z.infer<typeof FieldTypeSchema>;
 
+/** Calendar date supplied in the signer's local timezone, without UTC conversion. */
+export function isValidSigningDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 export function typedSignatureInitials(value: string): string {
   const normalized = value.trim();
   if (!normalized) return '';
@@ -297,7 +304,14 @@ export interface StaffSession {
   revokedAt?: string;
 }
 
+/** Stable delegated actor identity; never inferred from mutable email or display name. */
+export interface DelegatedOwner {
+  applicationClientId: string;
+  subject: string;
+}
+
 export interface Transaction {
+  delegatedOwner?: DelegatedOwner;
   id: string;
   workspaceId: string;
   kind: 'PROPERTY' | 'HR_PACKET';
@@ -350,6 +364,7 @@ export interface EnvelopeDocument extends TemplateDocument {
 }
 
 export interface Envelope {
+  delegatedOwner?: DelegatedOwner;
   id: string;
   workspaceId: string;
   transactionId?: string;
@@ -572,8 +587,8 @@ export const SaveSigningProgressSchema = z.object({
   signature: z
     .object({
       kind: z.enum(['typed', 'drawn']),
-      value: z.string().min(1).max(250_000),
-      intentText: z.string().min(5).max(500),
+      value: z.string().trim().min(1).max(250_000),
+      intentText: z.string().trim().min(5).max(500),
     })
     .optional(),
 });

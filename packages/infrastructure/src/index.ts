@@ -1,3 +1,5 @@
+import { completionFontkit } from './pdf-font';
+export { validateSignatureMark } from './signature-validation';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { isIP } from 'node:net';
@@ -507,13 +509,22 @@ export function completedFieldDisplayValue(
     : value;
 }
 
+let completionFontBytes: Promise<Buffer> | undefined;
+function loadCompletionFont(): Promise<Buffer> {
+  completionFontBytes ??= fs.readFile(
+    new URL('../assets/NotoSansCJKsc-Regular.otf', import.meta.url),
+  );
+  return completionFontBytes;
+}
+
 export async function renderCompletedPdf(
   source: Uint8Array,
   envelope: Envelope,
   documentId: string,
 ): Promise<Uint8Array> {
   const pdf = await PDFDocument.load(source, { ignoreEncryption: false });
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  pdf.registerFontkit(completionFontkit);
+  const font = await pdf.embedFont(await loadCompletionFont(), { subset: true });
   for (const field of envelope.fields.filter((candidate) => candidate.documentId === documentId)) {
     const value = completedFieldDisplayValue(envelope, field.id);
     if (!value) continue;
@@ -524,11 +535,23 @@ export async function renderCompletedPdf(
     const height = field.rect.height * page.getHeight();
     const width = field.rect.width * page.getWidth();
     const y = page.getHeight() - field.rect.y * page.getHeight() - height;
-    const renderedValue = value.startsWith('data:image/')
-      ? field.type === 'initials'
-        ? 'Initialed electronically'
-        : 'Signed electronically'
-      : value;
+    if (
+      (field.type === 'signature' || field.type === 'initials') &&
+      value.startsWith('data:image/')
+    ) {
+      const mark = value.startsWith('data:image/png;')
+        ? await pdf.embedPng(value)
+        : await pdf.embedJpg(value);
+      const fitted = mark.scaleToFit(Math.max(1, width - 4), Math.max(1, height - 4));
+      page.drawImage(mark, {
+        x: x + (width - fitted.width) / 2,
+        y: y + (height - fitted.height) / 2,
+        width: fitted.width,
+        height: fitted.height,
+      });
+      continue;
+    }
+    const renderedValue = value;
     let size = Math.max(
       8,
       Math.min(height * 0.55, field.type === 'signature' || field.type === 'initials' ? 18 : 12),
@@ -547,7 +570,7 @@ export async function renderCompletedPdf(
       maxWidth,
     });
   }
-  const certificate = pdf.addPage([612, 792]);
+  let certificate = pdf.addPage([612, 792]);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   certificate.drawText('Electronic Signature Completion Certificate', {
     x: 54,
@@ -577,10 +600,15 @@ export async function renderCompletedPdf(
   });
   let y = 590;
   for (const recipient of envelope.recipients) {
-    certificate.drawText(`${recipient.name} <${recipient.email}> — ${recipient.status}`, {
+    if (y < 130) {
+      certificate = pdf.addPage([612, 792]);
+      y = 730;
+    }
+    const recipientLine = `${recipient.name} <${recipient.email}> — ${recipient.status}`;
+    certificate.drawText(recipientLine, {
       x: 54,
       y,
-      size: 10,
+      size: Math.min(10, 500 / font.widthOfTextAtSize(recipientLine, 1)),
       font,
     });
     y -= 18;

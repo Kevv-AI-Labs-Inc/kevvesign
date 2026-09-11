@@ -119,9 +119,9 @@ describe('one-email signing journey', () => {
         id: crypto.randomUUID(),
         documentId: document.id,
         page: 1,
-        type: 'full_name' as const,
+        type: 'signed_date' as const,
         roleId: role.id,
-        label: 'Legal name',
+        label: 'Signed date',
         required: true,
         readOnly: false,
         sensitive: false,
@@ -164,7 +164,7 @@ describe('one-email signing journey', () => {
           subject: 'Reject changed version',
           message: '',
           expiresAt: '2027-01-01T00:00:00.000Z',
-          recipients: [{ roleId: role.id, name: 'Alex Buyer', email: 'alex@example.test' }],
+          recipients: [{ roleId: role.id, name: '测试客户', email: 'alex@example.test' }],
           mergeData: {},
         },
         'wrong-version-key',
@@ -181,7 +181,7 @@ describe('one-email signing journey', () => {
           subject: 'Reject changed schema',
           message: '',
           expiresAt: '2027-01-01T00:00:00.000Z',
-          recipients: [{ roleId: role.id, name: 'Alex Buyer', email: 'alex@example.test' }],
+          recipients: [{ roleId: role.id, name: '测试客户', email: 'alex@example.test' }],
           mergeData: {},
         },
         'wrong-schema-key',
@@ -197,7 +197,7 @@ describe('one-email signing journey', () => {
         subject: 'Please sign synthetic offer',
         message: 'Review the attached synthetic form.',
         expiresAt: '2027-01-01T00:00:00.000Z',
-        recipients: [{ roleId: role.id, name: 'Alex Buyer', email: 'alex@example.test' }],
+        recipients: [{ roleId: role.id, name: '测试客户', email: 'alex@example.test' }],
         mergeData: { 'property.address': '123 Main Street' },
       },
       'create-key',
@@ -243,6 +243,38 @@ describe('one-email signing journey', () => {
     });
     expect(consent.statusCode).toBe(200);
 
+    for (const value of ['123 QA Test Street', '2026-02-30', '2026-13-01', true, ['2026-09-11']]) {
+      const rejected = await server.inject({
+        method: 'POST',
+        url: '/v1/signing/progress',
+        headers: { cookie: cookies, 'x-csrf-token': csrf, origin: config.WEB_ORIGIN },
+        payload: {
+          expectedEnvelopeVersion: exchangeBody.data.envelope.version,
+          values: { [fields[1]!.id]: value },
+        },
+      });
+      expect(rejected.statusCode).toBe(422);
+      expect(rejected.json().error.code).toBe('invalid_date');
+    }
+    const invalidMark = await server.inject({
+      method: 'POST',
+      url: '/v1/signing/progress',
+      headers: { cookie: cookies, 'x-csrf-token': csrf, origin: config.WEB_ORIGIN },
+      payload: {
+        expectedEnvelopeVersion: exchangeBody.data.envelope.version,
+        values: {},
+        signature: {
+          kind: 'drawn',
+          value: 'data:image/png;base64,aGVsbG8=',
+          intentText: 'I intend to sign.',
+        },
+      },
+    });
+    expect(invalidMark.statusCode).toBe(422);
+    expect(repository.snapshot().envelopes[0]!.recipients[0]!.signature).toBeUndefined();
+    expect(
+      repository.snapshot().envelopes[0]!.recipients[0]!.values[fields[1]!.id],
+    ).toBeUndefined();
     const progress = await server.inject({
       method: 'POST',
       url: '/v1/signing/progress',
@@ -251,11 +283,11 @@ describe('one-email signing journey', () => {
         expectedEnvelopeVersion: exchangeBody.data.envelope.version,
         values: {
           [fields[0]!.id]: '123 Main Street',
-          [fields[1]!.id]: 'Alex Buyer',
+          [fields[1]!.id]: '2026-09-11',
         },
         signature: {
           kind: 'typed',
-          value: 'Alex Buyer',
+          value: '测试客户',
           intentText: 'I intend this mark to be my electronic signature.',
         },
       },

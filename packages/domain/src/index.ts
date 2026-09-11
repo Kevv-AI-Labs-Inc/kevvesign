@@ -1,3 +1,4 @@
+import { isValidSigningDate } from '@esign/contracts';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type {
   ApplicationScope,
@@ -396,6 +397,18 @@ export function validateRecipientCompletion(
         details.push({ field: field.id, message: `${field.label} is required.`, code: 'required' });
     } else if (isEmpty) {
       details.push({ field: field.id, message: `${field.label} is required.`, code: 'required' });
+    }
+  }
+  for (const field of fields.filter(
+    (field) => field.roleId === recipient.roleId && field.type === 'signed_date',
+  )) {
+    const value = recipient.values[field.id];
+    if (value !== undefined && value !== '' && !isValidSigningDate(value)) {
+      details.push({
+        field: field.id,
+        message: `${field.label} must be a valid date (YYYY-MM-DD).`,
+        code: 'invalid_date',
+      });
     }
   }
   if (!recipient.consentedAt) {

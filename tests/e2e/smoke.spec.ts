@@ -47,6 +47,7 @@ test('a registered connector opens the delegated workspace without another login
       name: `Acme CRM browser ${Date.now()}`,
       connectorKey: `acme-browser-${Date.now()}`,
       scopes: ['integration-sessions:create', 'envelopes:read'],
+      businessDomains: ['REAL_ESTATE'],
       allowedReturnUrls: ['https://crm.example.test/esign/return'],
     },
   });
