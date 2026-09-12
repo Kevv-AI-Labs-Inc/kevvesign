@@ -2364,6 +2364,10 @@ input[type='file'] {
   .signer-guide .button {
     min-height: 36px;
   }
+  .signer-guide p[role='status'],
+  .signer-guide [role='alert'] p {
+    display: block;
+  }
   .signer-document {
     padding: 18px 8px 100px;
   }
