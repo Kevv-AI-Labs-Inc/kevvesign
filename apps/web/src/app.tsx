@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import {
   Activity,
   Archive,
@@ -58,6 +66,7 @@ import type {
 import { api, ApiError, idempotencyKey } from './api';
 import { PdfCanvas, SigningDocument } from './pdf';
 import { SignaturePad } from './signature-pad';
+import { SigningDraft, type DraftContent } from './signing-draft';
 
 type Notice = { kind: 'success' | 'error'; message: string } | null;
 
@@ -1920,17 +1929,11 @@ function SigningPage() {
   const { token = '' } = useParams();
   const [context, setContext] = useState<import('@esign/contracts').SigningContext>();
   const [phase, setPhase] = useState<
-    'opening' | 'access-code' | 'consent' | 'sign' | 'done' | 'unavailable'
+    'opening' | 'access-code' | 'consent' | 'sign' | 'done' | 'declined' | 'unavailable' | 'retry'
   >('opening');
   const [notice, setNotice] = useState<Notice>(null);
   const [accessCode, setAccessCode] = useState('');
-  const [values, setValues] = useState<Record<string, string | boolean | string[]>>({});
-  const [signatureOpen, setSignatureOpen] = useState(false);
-  const [signature, setSignature] = useState<{
-    kind: 'typed' | 'drawn';
-    value: string;
-    intentText: string;
-  }>();
+  const [linkState, setLinkState] = useState('unavailable');
   const exchange = useCallback(
     async (code?: string) => {
       try {
@@ -1942,33 +1945,27 @@ function SigningPage() {
           },
         );
         setContext(result);
-        setValues(result.recipient.values);
-        setSignature(
-          result.recipient.signature
-            ? {
-                kind: result.recipient.signature.kind,
-                value: result.recipient.signature.value,
-                intentText: result.recipient.signature.intentText,
-              }
-            : undefined,
-        );
         setPhase(result.recipient.consentedAt ? 'sign' : 'consent');
       } catch (caught) {
         if (caught instanceof ApiError && caught.code === 'access_code_invalid')
           setPhase('access-code');
-        else setPhase('unavailable');
+        else if (caught instanceof ApiError && caught.status === 410) setPhase('unavailable');
+        else setPhase('retry');
       }
     },
     [token],
   );
   useEffect(() => {
     let active = true;
-    void api<{ valid: boolean }>(`/v1/invitations/${encodeURIComponent(token)}`)
+    void api<{ valid: boolean; state?: string }>(`/v1/invitations/${encodeURIComponent(token)}`)
       .then((status) => {
-        if (active) return status.valid ? exchange() : setPhase('unavailable');
+        if (!active) return;
+        if (status.valid) return exchange();
+        setLinkState(status.state || 'unavailable');
+        setPhase(status.state === 'completed' ? 'done' : 'unavailable');
       })
       .catch(() => {
-        if (active) setPhase('unavailable');
+        if (active) setPhase('retry');
       });
     return () => {
       active = false;
@@ -1977,52 +1974,19 @@ function SigningPage() {
   async function consent() {
     if (!context) return;
     try {
-      const next = await api<import('@esign/contracts').SigningContext>('/v1/signing/consent', {
-        method: 'POST',
-        body: JSON.stringify({ accepted: true, disclosureVersion: context.disclosure.version }),
-      });
+      const next = await signingRequest<import('@esign/contracts').SigningContext>(
+        '/v1/signing/consent',
+        { accepted: true, disclosureVersion: context.disclosure.version },
+        context,
+        token,
+        accessCode,
+      );
       setContext(next);
       setPhase('sign');
     } catch (caught) {
       setNotice({
         kind: 'error',
         message: caught instanceof Error ? caught.message : 'Consent failed.',
-      });
-    }
-  }
-  async function save(showNotice = true) {
-    if (!context) return;
-    const editableFieldIds = new Set(
-      context.fields.filter((field) => !field.readOnly).map((field) => field.id),
-    );
-    const editableValues = Object.fromEntries(
-      Object.entries(values).filter(([fieldId]) => editableFieldIds.has(fieldId)),
-    );
-    const next = await api<import('@esign/contracts').SigningContext>('/v1/signing/progress', {
-      method: 'POST',
-      body: JSON.stringify({
-        expectedEnvelopeVersion: context.envelope.version,
-        values: editableValues,
-        ...(signature ? { signature } : {}),
-      }),
-    });
-    setContext(next);
-    if (showNotice) setNotice({ kind: 'success', message: 'Progress saved securely.' });
-  }
-  async function finish() {
-    try {
-      await save(false);
-      await api('/v1/signing/finish', { method: 'POST', body: '{}' });
-      setPhase('done');
-    } catch (caught) {
-      setNotice({
-        kind: 'error',
-        message:
-          caught instanceof ApiError && caught.details.length
-            ? caught.details.map((item) => item.message).join(' ')
-            : caught instanceof Error
-              ? caught.message
-              : 'Unable to finish.',
       });
     }
   }
@@ -2062,6 +2026,22 @@ function SigningPage() {
         </div>
       </SignerFrame>
     );
+  if (phase === 'retry')
+    return (
+      <SignerFrame>
+        <div className="signer-card">
+          <CircleAlert />
+          <h1>We couldn’t connect</h1>
+          <p>
+            We couldn’t check your invitation status. Check your connection and try again. If you
+            opened the link repeatedly, wait a few minutes before retrying.
+          </p>
+          <button className="button primary wide" onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </div>
+      </SignerFrame>
+    );
   if (phase === 'unavailable')
     return (
       <SignerFrame>
@@ -2070,8 +2050,23 @@ function SigningPage() {
           <span className="eyebrow">Link unavailable</span>
           <h1>This invitation can’t be used</h1>
           <p>
-            It may have expired, been replaced, or the envelope may already be complete. Contact the
-            sender for a new invitation.
+            {linkState === 'expired'
+              ? 'This agreement has expired. Return to your onboarding page or contact the sender to restart it.'
+              : linkState === 'voided' || linkState === 'declined'
+                ? 'This agreement was cancelled or declined. Contact the sender before starting another agreement.'
+                : 'This link may have been replaced. Open the most recent signing email or ask the sender to resend the invitation.'}
+          </p>
+        </div>
+      </SignerFrame>
+    );
+  if (phase === 'declined')
+    return (
+      <SignerFrame>
+        <div className="signer-card">
+          <h1>You declined to sign</h1>
+          <p>
+            Your decision has been recorded. Contact the sender if you want to discuss the agreement
+            or start again.
           </p>
         </div>
       </SignerFrame>
@@ -2084,8 +2079,9 @@ function SigningPage() {
           <span className="eyebrow">Your action is recorded</span>
           <h1>Thank you. You’re finished.</h1>
           <p>
-            The platform is finalizing the completed PDF and evidence package. The sender can
-            retrieve the verified package and provide your entitled copy.
+            You have completed your part. Other recipients may still need to sign before the final
+            PDF is ready. You do not need to sign again. Return to the application that sent you
+            here to continue your next steps.
           </p>
         </div>
       </SignerFrame>
@@ -2095,6 +2091,7 @@ function SigningPage() {
     return (
       <SignerFrame>
         <div className="disclosure">
+          <NoticeBar notice={notice} clear={() => setNotice(null)} />
           <div className="disclosure-mark">
             <FileSignature />
           </div>
@@ -2115,6 +2112,165 @@ function SigningPage() {
         </div>
       </SignerFrame>
     );
+  return (
+    <SigningWorkspace
+      key={`${context.envelope.id}:${context.recipient.id}`}
+      initialContext={context}
+      token={token}
+      accessCode={accessCode}
+      onDone={(outcome) => setPhase(outcome === 'declined' ? 'declined' : 'done')}
+    />
+  );
+}
+
+async function signingRequest<T>(
+  path: string,
+  body: Record<string, unknown>,
+  context: import('@esign/contracts').SigningContext,
+  token: string,
+  accessCode: string,
+): Promise<T> {
+  const request = () =>
+    api<T>(path, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...body,
+        envelopeId: context.envelope.id,
+        recipientId: context.recipient.id,
+      }),
+    });
+  try {
+    return await request();
+  } catch (error) {
+    if (
+      !(error instanceof ApiError) ||
+      !['recipient_session_invalid', 'csrf_invalid', 'signing_context_changed'].includes(error.code)
+    )
+      throw error;
+    const renewed = await api<import('@esign/contracts').SigningContext>(
+      '/v1/signing/session/exchange',
+      {
+        method: 'POST',
+        body: JSON.stringify({ token, ...(accessCode ? { accessCode } : {}) }),
+      },
+    );
+    if (
+      renewed.envelope.id !== context.envelope.id ||
+      renewed.recipient.id !== context.recipient.id
+    )
+      throw new Error('The signing session changed. Reopen your invitation to continue.');
+    return request();
+  }
+}
+
+function SigningWorkspace({
+  initialContext,
+  token,
+  accessCode,
+  onDone,
+}: {
+  initialContext: import('@esign/contracts').SigningContext;
+  token: string;
+  accessCode: string;
+  onDone: (outcome?: 'signed' | 'declined') => void;
+}) {
+  const [draft] = useState(
+    () =>
+      new SigningDraft(initialContext, async (current, content: DraftContent) => {
+        const editable = new Set(
+          current.fields.filter((field) => !field.readOnly).map((field) => field.id),
+        );
+        return signingRequest(
+          '/v1/signing/progress',
+          {
+            expectedEnvelopeVersion: current.envelope.version,
+            expectedProgressVersion: current.recipient.progressVersion ?? 0,
+            values: Object.fromEntries(
+              Object.entries(content.values).filter(([id]) => editable.has(id)),
+            ),
+            ...(content.signature ? { signature: content.signature } : {}),
+          },
+          current,
+          token,
+          accessCode,
+        );
+      }),
+  );
+  const snapshot = useSyncExternalStore(draft.subscribe, draft.getSnapshot);
+  const { context, values, signature } = snapshot;
+  const [signatureOpen, setSignatureOpen] = useState(false);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [finishing, setFinishing] = useState(false);
+  const finishLock = useRef(false);
+  const save = useCallback(
+    async (showNotice = true) => {
+      try {
+        await draft.save();
+        if (showNotice) setNotice({ kind: 'success', message: 'Progress saved securely.' });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [draft],
+  );
+  useEffect(() => {
+    if (snapshot.state !== 'unsaved' || finishing) return;
+    const timer = window.setTimeout(() => void save(false), 500);
+    return () => window.clearTimeout(timer);
+  }, [snapshot.state, snapshot.values, snapshot.signature, finishing, save]);
+  useEffect(() => {
+    const retry = () => {
+      if (draft.hasUnsavedChanges()) void save(false);
+    };
+    const hide = () => {
+      if (document.visibilityState === 'hidden') retry();
+    };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (draft.hasUnsavedChanges()) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('online', retry);
+    window.addEventListener('beforeunload', beforeUnload);
+    document.addEventListener('visibilitychange', hide);
+    return () => {
+      window.removeEventListener('online', retry);
+      window.removeEventListener('beforeunload', beforeUnload);
+      document.removeEventListener('visibilitychange', hide);
+    };
+  }, [draft, save]);
+  async function finish() {
+    if (finishLock.current) return;
+    finishLock.current = true;
+    setFinishing(true);
+    try {
+      await draft.save();
+      const current = draft.getSnapshot().context;
+      await signingRequest(
+        '/v1/signing/finish',
+        { expectedProgressVersion: current.recipient.progressVersion ?? 0 },
+        current,
+        token,
+        accessCode,
+      );
+      onDone();
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        message:
+          error instanceof ApiError && error.details.length
+            ? error.details.map((item) => item.message).join(' ')
+            : error instanceof Error
+              ? error.message
+              : 'Unable to finish. Your progress is retained.',
+      });
+    } finally {
+      finishLock.current = false;
+      setFinishing(false);
+    }
+  }
   const requiredFields = context.fields.filter((field) => field.required && !field.readOnly);
   const completedFields = requiredFields.filter((field) => {
     if (field.type === 'signature' || field.type === 'initials') return Boolean(signature);
@@ -2156,20 +2312,65 @@ function SigningPage() {
             <span>of {requiredFields.length}</span>
           </div>
           <p>
-            Required fields are outlined in green. Your progress can be saved and resumed from the
-            same invitation.
+            Your progress saves automatically. Wait for “All changes saved” before closing. Reopen
+            this invitation to continue on any device.
           </p>
-          <button className="button secondary wide" onClick={() => void save()}>
+          <p role="status" aria-live="polite">
+            {snapshot.state === 'saved'
+              ? 'All changes saved'
+              : snapshot.state === 'saving'
+                ? 'Saving…'
+                : snapshot.state === 'error'
+                  ? 'Changes have not been saved'
+                  : 'Unsaved changes'}
+          </p>
+          {snapshot.error && (
+            <div role="alert">
+              <p>{snapshot.error}</p>
+              <p>Keep this page open to retain your current edits.</p>
+              {snapshot.conflict && (
+                <button
+                  className="button secondary wide"
+                  onClick={() => {
+                    if (
+                      confirm(
+                        'Load the latest saved progress? Your unsaved edits on this page will be replaced.',
+                      )
+                    )
+                      window.location.reload();
+                  }}
+                >
+                  Review latest saved progress
+                </button>
+              )}
+            </div>
+          )}
+          <button
+            className="button secondary wide"
+            disabled={finishing}
+            onClick={() => void save()}
+          >
             <Clock3 /> Save progress
           </button>
           <button
             className="text-button danger"
+            disabled={finishing || snapshot.state === 'saving'}
             onClick={() => {
               if (confirm('Decline this envelope?'))
-                void api('/v1/signing/decline', {
-                  method: 'POST',
-                  body: JSON.stringify({ reason: '' }),
-                }).then(() => setPhase('done'));
+                void signingRequest(
+                  '/v1/signing/decline',
+                  { reason: '' },
+                  context,
+                  token,
+                  accessCode,
+                )
+                  .then(() => onDone('declined'))
+                  .catch((error: unknown) =>
+                    setNotice({
+                      kind: 'error',
+                      message: error instanceof Error ? error.message : 'Unable to decline.',
+                    }),
+                  );
             }}
           >
             Decline to sign
@@ -2189,10 +2390,13 @@ function SigningPage() {
                 fields={context.fields.filter((field) => field.documentId === document.id)}
                 values={values}
                 signature={signature?.value}
-                onValue={(fieldId, value) =>
-                  setValues((current) => ({ ...current, [fieldId]: value }))
-                }
-                onSignature={() => setSignatureOpen(true)}
+                onValue={(fieldId, value) => {
+                  if (!finishLock.current)
+                    draft.edit({ values: { ...draft.getSnapshot().values, [fieldId]: value } });
+                }}
+                onSignature={() => {
+                  if (!finishLock.current) setSignatureOpen(true);
+                }}
               />
             </article>
           ))}
@@ -2203,10 +2407,14 @@ function SigningPage() {
           <ShieldCheck />
           <span>
             <strong>Your actions are evidence-bound</strong>
-            <small>Email invitation possession · Encrypted transport · Audit recorded</small>
+            <small>Recipient-specific access · Encrypted transport · Audit recorded</small>
           </span>
         </div>
-        <button className="button primary finish" onClick={() => void finish()}>
+        <button
+          className="button primary finish"
+          disabled={finishing}
+          onClick={() => void finish()}
+        >
           Adopt & finish <ChevronRight />
         </button>
       </footer>
@@ -2215,10 +2423,12 @@ function SigningPage() {
           name={context.recipient.name}
           close={() => setSignatureOpen(false)}
           adopt={(next) => {
-            setSignature({
-              ...next,
-              intentText:
-                'I intend this electronic mark to be my signature for the assigned records.',
+            draft.edit({
+              signature: {
+                ...next,
+                intentText:
+                  'I intend this electronic mark to be my signature for the assigned records.',
+              },
             });
             setSignatureOpen(false);
           }}

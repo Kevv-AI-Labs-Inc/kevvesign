@@ -203,12 +203,74 @@ describe('one-email signing journey', () => {
       'create-key',
       { requestId: 'create', ip: '127.0.0.1', userAgent: 'test' },
     );
+    const originalPdf = await service.envelopeDocument(principal, envelope.id, document.id);
+    expect(Buffer.from(originalPdf).subarray(0, 5).toString()).toBe('%PDF-');
+    await expect(
+      service.envelopeDocument(principal, envelope.id, crypto.randomUUID()),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      service.envelopeDocument(
+        { ...principal, workspaceId: crypto.randomUUID() },
+        envelope.id,
+        document.id,
+      ),
+    ).rejects.toMatchObject({ statusCode: 404 });
     const send = await service.sendEnvelope(principal, envelope.id, 'send-key', {
       requestId: 'send',
       ip: '127.0.0.1',
       userAgent: 'test',
     });
     const token = send.invitationUrls[0]!.split('/').at(-1)!;
+    const accessContext = { requestId: 'resume', ip: '127.0.0.1', userAgent: 'test' };
+    const sourceApp = {
+      ...principal,
+      actorType: 'application' as const,
+      businessDomains: ['REAL_ESTATE' as const],
+      delegatedScopes: ['envelopes:send' as const],
+    };
+    await expect(
+      Promise.resolve().then(() =>
+        service.createSignerAccess(
+          principal,
+          envelope.id,
+          envelope.recipients[0]!.id,
+          'alex@example.test',
+          accessContext,
+        ),
+      ),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    await expect(
+      service.createSignerAccess(
+        sourceApp,
+        envelope.id,
+        envelope.recipients[0]!.id,
+        'another@example.test',
+        accessContext,
+      ),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    const continued = await service.createSignerAccess(
+      sourceApp,
+      envelope.id,
+      envelope.recipients[0]!.id,
+      'alex@example.test',
+      accessContext,
+    );
+    const resumeToken = new URL(continued.url).pathname.split('/').at(-1)!;
+    expect(await service.invitationStatus(resumeToken)).toEqual({
+      valid: true,
+      state: 'available',
+    });
+    expect(await service.invitationStatus(token)).toEqual({ valid: true, state: 'available' });
+    expect(email.messages).toHaveLength(1);
+    await expect(
+      service.createSignerAccess(
+        sourceApp,
+        envelope.id,
+        envelope.recipients[0]!.id,
+        'alex@example.test',
+        accessContext,
+      ),
+    ).rejects.toMatchObject({ statusCode: 429 });
 
     const server = await buildServer(config, { repository, objects, email, signer, scanner });
     servers.push(server);
@@ -294,6 +356,41 @@ describe('one-email signing journey', () => {
     });
     expect(progress.statusCode).toBe(200);
 
+    expect(progress.json().data.recipient.progressVersion).toBe(1);
+    const staleSave = await server.inject({
+      method: 'POST',
+      url: '/v1/signing/progress',
+      headers: { cookie: cookies, 'x-csrf-token': csrf, origin: config.WEB_ORIGIN },
+      payload: {
+        expectedEnvelopeVersion: exchangeBody.data.envelope.version,
+        expectedProgressVersion: 0,
+        values: { [fields[1]!.id]: '2026-09-12' },
+      },
+    });
+    expect(staleSave.statusCode).toBe(409);
+    expect(staleSave.json().error.code).toBe('progress_conflict');
+    const wrongIdentity = await server.inject({
+      method: 'POST',
+      url: '/v1/signing/finish',
+      headers: { cookie: cookies, 'x-csrf-token': csrf, origin: config.WEB_ORIGIN },
+      payload: { recipientId: crypto.randomUUID() },
+    });
+    expect(wrongIdentity.statusCode).toBe(409);
+    expect(repository.snapshot().envelopes[0]!.recipients[0]!.status).toBe('IN_PROGRESS');
+
+    // The original invitation can be reopened in a new browser/session, with
+    // its server-side progress intact; it is not consumed by the first visit.
+    const reopened = await server.inject({
+      method: 'POST',
+      url: '/v1/signing/session/exchange',
+      payload: { token },
+      headers: { origin: config.WEB_ORIGIN },
+    });
+    expect(reopened.statusCode).toBe(200);
+    expect(reopened.json().data.recipient.values[fields[1]!.id]).toBe('2026-09-11');
+    expect(reopened.json().data.recipient.signature.value).toBe('测试客户');
+    expect(reopened.json().data.recipient.progressVersion).toBe(1);
+
     const tamperedMerge = await server.inject({
       method: 'POST',
       url: '/v1/signing/progress',
@@ -314,8 +411,61 @@ describe('one-email signing journey', () => {
     });
     expect(finish.statusCode).toBe(200);
     expect(finish.json().data.envelope.status).toBe('COMPLETED');
+    // Independent invitation attempts from one office network do not share
+    // the per-invitation quota, while repeated attempts on one token do.
+    for (let i = 0; i < 12; i++) {
+      const unknown = await server.inject({
+        method: 'POST',
+        url: '/v1/signing/session/exchange',
+        payload: { token: crypto.randomUUID() },
+        headers: { origin: config.WEB_ORIGIN },
+      });
+      expect(unknown.statusCode).toBe(410);
+    }
+    const repeatedToken = crypto.randomUUID();
+    for (let i = 0; i < 10; i++) {
+      expect(
+        (
+          await server.inject({
+            method: 'POST',
+            url: '/v1/signing/session/exchange',
+            payload: { token: repeatedToken },
+            headers: { origin: config.WEB_ORIGIN },
+          })
+        ).statusCode,
+      ).toBe(410);
+    }
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/signing/session/exchange',
+          payload: { token: repeatedToken },
+          headers: { origin: config.WEB_ORIGIN },
+        })
+      ).statusCode,
+    ).toBe(429);
     const completed = repository.snapshot();
     expect(completed.envelopes[0]!.status).toBe('COMPLETED');
+    expect(
+      (await server.inject({ method: 'GET', url: `/v1/invitations/${token}` })).json().data,
+    ).toEqual({ valid: false, state: 'completed' });
+    // A still-existing second session cannot modify or finish a completed recipient.
+    const secondCookies = reopened.cookies
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join('; ');
+    const secondCsrf = reopened.cookies.find((cookie) => cookie.name === 'esign_csrf')!.value;
+    expect(
+      (
+        await server.inject({
+          method: 'POST',
+          url: '/v1/signing/finish',
+          headers: { cookie: secondCookies, 'x-csrf-token': secondCsrf, origin: config.WEB_ORIGIN },
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(410);
+
     expect(completed.evidencePackages[0]!.verificationStatus).toBe('VERIFIED');
     expect(
       completed.evidencePackages[0]!.files.some((file) => file.contentType === 'application/pdf'),

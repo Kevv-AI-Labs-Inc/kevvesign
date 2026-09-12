@@ -567,7 +567,7 @@ describe('staff API and signing branches', () => {
     expect(sendReplay.json().data.replayed).toBe(true);
     expect(
       (await server.inject({ method: 'GET', url: `/v1/invitations/${oldToken}` })).json(),
-    ).toEqual({ data: { valid: true } });
+    ).toEqual({ data: { valid: true, state: 'available' } });
 
     const resend = await server.inject({
       method: 'POST',
@@ -576,7 +576,7 @@ describe('staff API and signing branches', () => {
     const token = resend.json().data.invitationUrl.split('/').at(-1);
     expect(
       (await server.inject({ method: 'GET', url: `/v1/invitations/${oldToken}` })).json(),
-    ).toEqual({ data: { valid: false } });
+    ).toEqual({ data: { valid: false, state: 'unavailable' } });
     expect(
       (
         await server.inject({

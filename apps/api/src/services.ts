@@ -15,6 +15,7 @@ import type {
   Recipient,
   SaveSigningProgress,
   SigningContext,
+  SigningIdentity,
   StaffPrincipal,
   Template,
   TemplateDocument,
@@ -73,6 +74,42 @@ function auditActor(principal: StaffPrincipal) {
       ? { sourceApplicationClientId: principal.sourceApplicationClientId }
       : {}),
   };
+}
+
+function requireSigningIdentity(
+  envelope: Envelope,
+  recipient: Recipient,
+  expected: SigningIdentity,
+) {
+  if (
+    (expected.envelopeId && expected.envelopeId !== envelope.id) ||
+    (expected.recipientId && expected.recipientId !== recipient.id)
+  ) {
+    throw new DomainError(
+      'signing_context_changed',
+      'Another document is open in this browser. Reopen this invitation to continue.',
+      409,
+    );
+  }
+  if (
+    expected.expectedProgressVersion !== undefined &&
+    expected.expectedProgressVersion !== (recipient.progressVersion ?? 0)
+  ) {
+    throw new DomainError(
+      'progress_conflict',
+      'Saved progress changed in another session. Reopen the invitation to review it before continuing.',
+      409,
+    );
+  }
+}
+
+function matchesSigningToken(recipient: Recipient, token: string, now: Date) {
+  return Boolean(
+    (recipient.invitationHash && safeSecretEqual(token, recipient.invitationHash)) ||
+    recipient.resumeLinks?.some(
+      (link) => new Date(link.expiresAt) > now && safeSecretEqual(token, link.hash),
+    ),
+  );
 }
 
 const ALL_BUSINESS_DOMAINS: readonly BusinessDomain[] = ['REAL_ESTATE', 'HR'];
@@ -1712,7 +1749,12 @@ export class ESignService {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
       requireEnvelopeAccess(principal, envelope);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
-      if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
+      if (
+        !recipient ||
+        !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status) ||
+        !['SENT', 'IN_PROGRESS'].includes(envelope.status) ||
+        new Date(envelope.expiresAt) <= this.clock.now()
+      ) {
         throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
       }
       if (!envelope.signingEngineEnvelopeId) {
@@ -1755,11 +1797,17 @@ export class ESignService {
       const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
       requireEnvelopeAccess(principal, envelope);
       const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
-      if (!recipient || !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status)) {
+      if (
+        !recipient ||
+        !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status) ||
+        !['SENT', 'IN_PROGRESS'].includes(envelope.status) ||
+        new Date(envelope.expiresAt) <= this.clock.now()
+      ) {
         throw new DomainError('recipient_unavailable', 'Recipient is not active.', 409);
       }
       const token = createSecret(32);
       recipient.invitationHash = sha256(token);
+      recipient.resumeLinks = [];
       for (const session of state.recipientSessions.filter(
         (candidate) => candidate.recipientId === recipient.id,
       )) {
@@ -1856,23 +1904,109 @@ export class ESignService {
     });
   }
 
-  invitationStatus(token: string): Promise<{ valid: boolean }> {
-    return this.repository.read((state) => {
-      const now = this.clock.now();
-      const recipient = state.envelopes
-        .flatMap((envelope) => envelope.recipients)
-        .find(
-          (candidate) =>
-            candidate.invitationHash && safeSecretEqual(token, candidate.invitationHash),
+  createSignerAccess(
+    principal: StaffPrincipal,
+    envelopeId: string,
+    recipientId: string,
+    authenticatedEmail: string,
+    context: RequestContext,
+  ): Promise<{ url: string }> {
+    if (actorType(principal) !== 'application') {
+      throw new DomainError(
+        'application_required',
+        'A trusted application identity is required.',
+        403,
+      );
+    }
+    requirePermission(principal, 'envelope.send');
+    return this.repository.write((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireEnvelopeAccess(principal, envelope);
+      const recipient = envelope.recipients.find((candidate) => candidate.id === recipientId);
+      if (
+        !recipient ||
+        recipient.kind !== 'signer' ||
+        recipient.email.trim().toLowerCase() !== authenticatedEmail.trim().toLowerCase()
+      ) {
+        throw new DomainError(
+          'signer_mismatch',
+          'This account does not match the agreement signer.',
+          403,
         );
-      return {
-        valid: Boolean(
-          recipient &&
-          recipient.invitationExpiresAt &&
-          new Date(recipient.invitationExpiresAt) > now &&
-          ['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status),
+      }
+      const now = this.clock.now();
+      if (
+        !['SENT', 'IN_PROGRESS'].includes(envelope.status) ||
+        !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status) ||
+        new Date(envelope.expiresAt) <= now
+      ) {
+        throw new DomainError(
+          'invitation_unavailable',
+          'This agreement is no longer awaiting your signature.',
+          410,
+        );
+      }
+      if (envelope.signingEngineEnvelopeId || envelope.signingProviderConnectionId) {
+        throw new DomainError(
+          'email_resume_required',
+          'Continue using the invitation from your signing provider, or request a reminder.',
+          409,
+        );
+      }
+      if (
+        recipient.lastResumeLinkAt &&
+        now.getTime() - new Date(recipient.lastResumeLinkAt).getTime() < 10_000
+      ) {
+        throw new DomainError(
+          'resume_rate_limited',
+          'Wait a few seconds before opening signing again.',
+          429,
+        );
+      }
+      const token = createSecret(32);
+      recipient.resumeLinks = [
+        ...(recipient.resumeLinks || []).filter((link) => new Date(link.expiresAt) > now).slice(-4),
+        { hash: sha256(token), expiresAt: envelope.expiresAt },
+      ];
+      recipient.lastResumeLinkAt = now.toISOString();
+      appendAudit(state, {
+        workspaceId: envelope.workspaceId,
+        envelopeId: envelope.id,
+        ...auditActor(principal),
+        type: 'recipient.access.issued',
+        occurredAt: now.toISOString(),
+        requestId: context.requestId,
+        payload: { recipientId: recipient.id },
+      });
+      return { url: `${this.publicBaseUrl}/sign/${token}` };
+    });
+  }
+
+  invitationStatus(token: string): Promise<{ valid: boolean; state: string }> {
+    return this.repository.read((state) => {
+      const envelope = state.envelopes.find((item) =>
+        item.recipients.some((recipient) =>
+          matchesSigningToken(recipient, token, this.clock.now()),
         ),
-      };
+      );
+      const recipient = envelope?.recipients.find((item) =>
+        matchesSigningToken(item, token, this.clock.now()),
+      );
+      if (!envelope || !recipient) return { valid: false, state: 'unavailable' };
+      if (recipient.status === 'COMPLETED') return { valid: false, state: 'completed' };
+      if (envelope.status === 'VOIDED') return { valid: false, state: 'voided' };
+      if (envelope.status === 'DECLINED') return { valid: false, state: 'declined' };
+      if (
+        envelope.status === 'EXPIRED' ||
+        !recipient.invitationExpiresAt ||
+        new Date(recipient.invitationExpiresAt) <= this.clock.now() ||
+        new Date(envelope.expiresAt) <= this.clock.now()
+      )
+        return { valid: false, state: 'expired' };
+      const valid =
+        ['SENT', 'IN_PROGRESS'].includes(envelope.status) &&
+        ['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status);
+      return { valid, state: valid ? 'available' : 'unavailable' };
     });
   }
 
@@ -1883,13 +2017,12 @@ export class ESignService {
   ): Promise<{ sessionSecret: string; csrfToken: string; context: SigningContext }> {
     return this.repository.write((state) => {
       const envelope = state.envelopes.find((candidate) =>
-        candidate.recipients.some(
-          (recipient) =>
-            recipient.invitationHash && safeSecretEqual(token, recipient.invitationHash),
+        candidate.recipients.some((recipient) =>
+          matchesSigningToken(recipient, token, this.clock.now()),
         ),
       );
-      const recipient = envelope?.recipients.find(
-        (candidate) => candidate.invitationHash && safeSecretEqual(token, candidate.invitationHash),
+      const recipient = envelope?.recipients.find((candidate) =>
+        matchesSigningToken(candidate, token, this.clock.now()),
       );
       if (
         !envelope ||
@@ -1942,7 +2075,13 @@ export class ESignService {
         requestId: context.requestId,
         ip: context.ip,
         userAgent: context.userAgent,
-        payload: { assuranceMethod: recipient.assuranceMethod },
+        payload: {
+          assuranceMethod: recipient.accessCodeHash
+            ? 'access_code'
+            : recipient.resumeLinks?.some((link) => safeSecretEqual(token, link.hash))
+              ? 'internal_account'
+              : 'email_invitation',
+        },
       });
       return {
         sessionSecret,
@@ -1986,6 +2125,7 @@ export class ESignService {
         email: recipient.email,
         status: recipient.status,
         values: recipient.values,
+        progressVersion: recipient.progressVersion ?? 0,
         ...(recipient.consentedAt ? { consentedAt: recipient.consentedAt } : {}),
         ...(recipient.signature ? { signature: recipient.signature } : {}),
       },
@@ -2016,7 +2156,13 @@ export class ESignService {
       const recipient = envelope?.recipients.find(
         (candidate) => candidate.id === session.recipientId,
       );
-      if (!envelope || !recipient || !['SENT', 'IN_PROGRESS'].includes(envelope.status)) {
+      if (
+        !envelope ||
+        !recipient ||
+        !['SENT', 'IN_PROGRESS'].includes(envelope.status) ||
+        !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status) ||
+        new Date(envelope.expiresAt) <= this.clock.now()
+      ) {
         throw new DomainError('recipient_session_invalid', 'Signing session is unavailable.', 401);
       }
       operation(state, envelope, recipient);
@@ -2029,6 +2175,7 @@ export class ESignService {
     csrfToken: string,
     disclosureVersion: string,
     context: RequestContext,
+    expected: SigningIdentity = {},
   ): Promise<SigningContext> {
     if (disclosureVersion !== DISCLOSURE.version)
       throw new DomainError(
@@ -2037,6 +2184,7 @@ export class ESignService {
         409,
       );
     return this.recipientMutation(sessionSecret, csrfToken, (state, envelope, recipient) => {
+      requireSigningIdentity(envelope, recipient, expected);
       const now = this.clock.now().toISOString();
       recipient.consentedAt = now;
       recipient.disclosureVersion = disclosureVersion;
@@ -2063,6 +2211,26 @@ export class ESignService {
     context: RequestContext,
   ): Promise<SigningContext> {
     return this.recipientMutation(sessionSecret, csrfToken, (state, envelope, recipient) => {
+      if (
+        (input.envelopeId && input.envelopeId !== envelope.id) ||
+        (input.recipientId && input.recipientId !== recipient.id)
+      ) {
+        throw new DomainError(
+          'signing_context_changed',
+          'Another document is open in this browser. Reopen this invitation before saving.',
+          409,
+        );
+      }
+      if (
+        input.expectedProgressVersion !== undefined &&
+        input.expectedProgressVersion !== (recipient.progressVersion ?? 0)
+      ) {
+        throw new DomainError(
+          'progress_conflict',
+          'Your saved progress changed in another session. Reopen the invitation to load the latest saved progress.',
+          409,
+        );
+      }
       if (input.expectedEnvelopeVersion !== envelope.version) {
         throw new DomainError(
           'version_conflict',
@@ -2098,6 +2266,7 @@ export class ESignService {
           );
         }
       }
+      recipient.progressVersion = (recipient.progressVersion ?? 0) + 1;
       Object.assign(recipient.values, input.values);
       if (input.signature) {
         recipient.signature = { ...input.signature, adoptedAt: this.clock.now().toISOString() };
@@ -2123,6 +2292,7 @@ export class ESignService {
     sessionSecret: string,
     csrfToken: string,
     context: RequestContext,
+    expected: SigningIdentity = {},
   ): Promise<SigningContext> {
     const activation = await this.repository.write((state) => {
       const session = findSession(state, sessionSecret, this.clock.now());
@@ -2134,6 +2304,18 @@ export class ESignService {
       );
       if (!envelope || !recipient)
         throw new DomainError('recipient_session_invalid', 'Signing session is unavailable.', 401);
+      requireSigningIdentity(envelope, recipient, expected);
+      if (
+        !['SENT', 'IN_PROGRESS'].includes(envelope.status) ||
+        !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status) ||
+        new Date(envelope.expiresAt) <= this.clock.now()
+      ) {
+        throw new DomainError(
+          'invitation_unavailable',
+          'This signing invitation is no longer active.',
+          410,
+        );
+      }
       if (recipient.signature) validateSignatureMark(recipient.signature);
       const details = validateRecipientCompletion(envelope.fields, recipient);
       if (details.length > 0)
@@ -2239,6 +2421,7 @@ export class ESignService {
     csrfToken: string,
     reason: string,
     context: RequestContext,
+    expected: SigningIdentity = {},
   ): Promise<void> {
     return this.repository.write((state) => {
       const session = findSession(state, sessionSecret, this.clock.now());
@@ -2251,6 +2434,18 @@ export class ESignService {
       if (!envelope || !recipient)
         throw new DomainError('recipient_session_invalid', 'Signing session is unavailable.', 401);
       const now = this.clock.now().toISOString();
+      requireSigningIdentity(envelope, recipient, expected);
+      if (
+        !['SENT', 'IN_PROGRESS'].includes(envelope.status) ||
+        !['ACTIVE', 'VIEWED', 'IN_PROGRESS'].includes(recipient.status) ||
+        new Date(envelope.expiresAt) <= this.clock.now()
+      ) {
+        throw new DomainError(
+          'invitation_unavailable',
+          'This signing invitation is no longer active.',
+          410,
+        );
+      }
       recipient.status = 'DECLINED';
       recipient.declineReason = reason.trim().slice(0, 500);
       session.revokedAt = now;
@@ -2275,6 +2470,22 @@ export class ESignService {
       const session = findSession(state, sessionSecret, this.clock.now());
       const envelope = state.envelopes.find((candidate) => candidate.id === session.envelopeId);
       const document = envelope?.documents.find((candidate) => candidate.id === documentId);
+      if (!document) throw new DomainError('not_found', 'Document not found.', 404);
+      return document.objectKey;
+    });
+    return this.objects.get(key);
+  }
+
+  async envelopeDocument(
+    principal: StaffPrincipal,
+    envelopeId: string,
+    documentId: string,
+  ): Promise<Uint8Array> {
+    requirePermission(principal, 'envelope.read');
+    const key = await this.repository.read((state) => {
+      const envelope = findEnvelope(state, principal.workspaceId, envelopeId);
+      requireEnvelopeAccess(principal, envelope);
+      const document = envelope.documents.find((candidate) => candidate.id === documentId);
       if (!document) throw new DomainError('not_found', 'Document not found.', 404);
       return document.objectKey;
     });

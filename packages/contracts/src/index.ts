@@ -343,12 +343,16 @@ export interface Recipient {
   assuranceMethod: 'email_invitation' | 'access_code' | 'internal_account';
   invitationHash?: string;
   invitationExpiresAt?: string;
+  /** Additional links issued by a trusted source application for its authenticated signer. */
+  resumeLinks?: Array<{ hash: string; expiresAt: string }>;
+  lastResumeLinkAt?: string;
   accessCodeHash?: string;
   accessCodeFailures: number;
   consentedAt?: string;
   disclosureVersion?: string;
   signature?: SignatureAdoption;
   values: Record<string, FieldValue>;
+  progressVersion?: number;
   viewedAt?: string;
   completedAt?: string;
   declineReason?: string;
@@ -579,6 +583,9 @@ export const CreatePortalSessionInputSchema = CreateIntegrationSessionInputSchem
 export type CreatePortalSessionInput = CreateIntegrationSessionInput;
 
 export const SaveSigningProgressSchema = z.object({
+  envelopeId: z.string().uuid().optional(),
+  recipientId: z.string().uuid().optional(),
+  expectedProgressVersion: z.number().int().nonnegative().optional(),
   expectedEnvelopeVersion: z.number().int().positive(),
   values: z.record(
     z.string().uuid(),
@@ -594,7 +601,14 @@ export const SaveSigningProgressSchema = z.object({
 });
 export type SaveSigningProgress = z.infer<typeof SaveSigningProgressSchema>;
 
-export const ConsentInputSchema = z.object({
+export const SigningIdentitySchema = z.object({
+  envelopeId: z.string().uuid().optional(),
+  recipientId: z.string().uuid().optional(),
+  expectedProgressVersion: z.number().int().nonnegative().optional(),
+});
+export type SigningIdentity = z.infer<typeof SigningIdentitySchema>;
+
+export const ConsentInputSchema = SigningIdentitySchema.extend({
   disclosureVersion: z.string().min(1).max(80),
   accepted: z.literal(true),
 });
@@ -659,7 +673,7 @@ export interface SigningContext {
   >;
   recipient: Pick<
     Recipient,
-    'id' | 'name' | 'email' | 'status' | 'consentedAt' | 'signature' | 'values'
+    'id' | 'name' | 'email' | 'status' | 'consentedAt' | 'signature' | 'values' | 'progressVersion'
   >;
   fields: TemplateField[];
   csrfToken: string;

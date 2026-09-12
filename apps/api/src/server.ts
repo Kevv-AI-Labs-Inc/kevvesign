@@ -8,6 +8,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { ZodError, z } from 'zod';
 import {
   ConsentInputSchema,
+  SigningIdentitySchema,
   CreateApplicationClientInputSchema,
   CreateEnvelopeInputSchema,
   CreateIntegrationSessionInputSchema,
@@ -257,7 +258,19 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
     },
     crossOriginResourcePolicy: { policy: 'same-site' },
   });
-  await app.register(rateLimit, { max: 120, timeWindow: '1 minute', ban: 3 });
+  await app.register(rateLimit, {
+    max: 120,
+    timeWindow: '1 minute',
+    ban: 3,
+    // Signing drafts and document pages share a browser quota, not an office
+    // quota. Unknown users still use IP limits; exchanges also have a network cap.
+    keyGenerator: (request) => {
+      const session = request.cookies.esign_recipient;
+      return request.url.startsWith('/v1/signing/') && session
+        ? `${request.ip}:${sha256(session.slice(0, 200))}`
+        : request.ip;
+    },
+  });
   await app.register(multipart, {
     limits: { files: 1, fileSize: 30 * 1024 * 1024, fields: 10, parts: 12 },
     attachFieldsToBody: false,
@@ -495,7 +508,19 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
   );
   app.post(
     '/v1/integration-sessions/exchange',
-    { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } },
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          hook: 'preHandler',
+          timeWindow: '5 minutes',
+          keyGenerator: (request: FastifyRequest) => {
+            const token = (request.body as { token?: unknown } | undefined)?.token;
+            return `${request.ip}:${sha256(typeof token === 'string' ? token.slice(0, 200) : 'invalid')}`;
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const body = z.object({ ticket: TokenSchema }).parse(request.body);
       const result = await service.exchangeIntegrationSession(body.ticket, requestContext(request));
@@ -542,7 +567,19 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
   // provider-neutral integration contract.
   app.post(
     '/v1/portal-sessions/exchange',
-    { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } },
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          hook: 'preHandler',
+          timeWindow: '5 minutes',
+          keyGenerator: (request: FastifyRequest) => {
+            const token = (request.body as { token?: unknown } | undefined)?.token;
+            return `${request.ip}:${sha256(typeof token === 'string' ? token.slice(0, 200) : 'invalid')}`;
+          },
+        },
+      },
+    },
     async (request, reply) => {
       reply.header('deprecation', 'true');
       const body = z.object({ ticket: TokenSchema }).parse(request.body);
@@ -835,6 +872,46 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
       return success(config.NODE_ENV === 'development' ? result : { sent: true });
     },
   );
+  app.post(
+    '/v1/envelopes/:envelopeId/recipients/:recipientId/access',
+    {
+      preHandler: application('envelopes:send'),
+      config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    },
+    async (request, reply) => {
+      const params = request.params as { envelopeId: string; recipientId: string };
+      const body = z
+        .object({ authenticatedEmail: z.string().email().max(254) })
+        .strict()
+        .parse(request.body);
+      reply.header('Cache-Control', 'no-store');
+      return success(
+        await service.createSignerAccess(
+          request.staff!,
+          parseId(params.envelopeId),
+          parseId(params.recipientId),
+          body.authenticatedEmail,
+          requestContext(request),
+        ),
+      );
+    },
+  );
+  app.get(
+    '/v1/envelopes/:envelopeId/documents/:documentId',
+    { preHandler: staffOrApplication('envelopes:read') },
+    async (request, reply) => {
+      const params = request.params as { envelopeId: string; documentId: string };
+      const bytes = await service.envelopeDocument(
+        request.staff!,
+        parseId(params.envelopeId),
+        parseId(params.documentId),
+      );
+      return reply
+        .header('Cache-Control', 'private, no-store')
+        .type('application/pdf')
+        .send(Buffer.from(bytes));
+    },
+  );
   app.get(
     '/v1/envelopes/:envelopeId/evidence',
     { preHandler: staffOrApplication('evidence:read') },
@@ -863,15 +940,41 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
 
   app.get(
     '/v1/invitations/:token',
-    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
-    async (request) => {
+    { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      reply.header('Cache-Control', 'no-store');
       const { token } = request.params as { token: string };
       return success(await service.invitationStatus(TokenSchema.parse(token)));
     },
   );
+  const signingNetworkLimit = app.createRateLimit({
+    max: 120,
+    timeWindow: '1 minute',
+    keyGenerator: (request) => `signing-network:${request.ip}`,
+  });
   app.post(
     '/v1/signing/session/exchange',
-    { config: { rateLimit: { max: 10, timeWindow: '5 minutes' } } },
+    {
+      // createRateLimit does not mark the route's token limiter as already run.
+      preHandler: async (request, reply) => {
+        const limit = await signingNetworkLimit(request);
+        if (!limit.isAllowed && limit.isExceeded) {
+          reply.header('Retry-After', limit.ttlInSeconds);
+          throw new DomainError('rate_limited', 'Please wait a minute and try again.', 429);
+        }
+      },
+      config: {
+        rateLimit: {
+          max: 10,
+          hook: 'preHandler',
+          timeWindow: '5 minutes',
+          keyGenerator: (request: FastifyRequest) => {
+            const token = (request.body as { token?: unknown } | undefined)?.token;
+            return `${request.ip}:${sha256(typeof token === 'string' ? token.slice(0, 200) : 'invalid')}`;
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const body = z
         .object({ token: TokenSchema, accessCode: z.string().max(32).optional() })
@@ -915,6 +1018,7 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
         credentials.csrf,
         body.disclosureVersion,
         requestContext(request),
+        body,
       ),
     );
   });
@@ -935,6 +1039,7 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
       credentials.session,
       credentials.csrf,
       requestContext(request),
+      SigningIdentitySchema.parse(request.body || {}),
     );
     reply.clearCookie('esign_recipient', { path: '/v1/signing' });
     reply.clearCookie('esign_csrf', { path: '/' });
@@ -942,12 +1047,15 @@ export async function buildServer(config: AppConfig, dependencies = createDepend
   });
   app.post('/v1/signing/decline', async (request, reply) => {
     const credentials = getSession(request);
-    const body = z.object({ reason: z.string().max(500).default('') }).parse(request.body);
+    const body = SigningIdentitySchema.extend({ reason: z.string().max(500).default('') }).parse(
+      request.body,
+    );
     await service.decline(
       credentials.session,
       credentials.csrf,
       body.reason,
       requestContext(request),
+      body,
     );
     reply.clearCookie('esign_recipient', { path: '/v1/signing' });
     reply.clearCookie('esign_csrf', { path: '/' });
