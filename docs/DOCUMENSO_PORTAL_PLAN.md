@@ -346,3 +346,5 @@ Portal 新增迁移已应用，候选部署已 Ready；最终 UI 与回调中间
 eSign 全量 `pnpm verify` 通过 60 个测试和全部构建。手机端纸质合同上传/核验/文件字节与权限、培训限定权限和同一会话即时撤销已验证。最终原生合成 Sign 尚待先前发出的用户确认，完成 PDF/证书/审计证明、最终域名切换及 native 退役仍未完成。
 
 部署与运维说明已重写为实际 Documenso/bridge 架构，旧自建平台说明归档。详见 `docs/DEPLOYMENT.md`、`docs/SIGNING_OPERATIONS.md` 和 `docs/qa/2026-09-12-documenso-integration.md`。
+
+个性化文件补充验收：Homix Living 公司归属必选、Portal 上传至真实 Documenso、重复创建防重、原件字节、原生编辑刷新保存、发送至本地 Mailpit 及返回 Portal 同一待签任务均已验证，仍未点击最终 Sign。开发默认命令和环境示例已改为 bridge；CI 已加入所有新部署模板并通过编译。最新 Portal 候选 `dpl_5ECwL4pswEqL4UN7BRnSoZBi9q6b` 已 Ready，生产 HMAC 边界检查通过。

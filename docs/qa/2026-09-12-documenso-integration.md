@@ -46,6 +46,14 @@ The service P12 is a self-signed integrity seal, not an AATL/personal certificat
 
 Portal source commits `6058df3` and `950cf19`; eSign bridge source commit `8d1c82d`. Latest local Portal production build and targeted storage/pending-session regressions passed. ESLint has zero errors and one pre-existing generated workflow warning. Per-agent real-session training authorization and same-JWT revocation both passed.
 
-Final Portal candidate `dpl_DLX4Uq9Yd4uMmYuwJV5dcGEjHV16` / `https://homixliving-z8c7nnnum-erics-projects-9449aac9.vercel.app` is **Ready**; it includes the latest source fixes and was deployed with `--skip-domain`. No canonical domain promotion, actual signature or native retirement has occurred.
+Final Portal candidate `dpl_5ECwL4pswEqL4UN7BRnSoZBi9q6b` / `https://homixliving-iwyama71e-erics-projects-9449aac9.vercel.app` is **Ready**; it includes the latest source fixes and was deployed with `--skip-domain`. No canonical domain promotion, actual signature or native retirement has occurred.
 
 Candidate smoke found and fixed a middleware issue: the exact POST `/api/signing/events` must reach its HMAC handler without a browser session. All other signing routes remain protected. Regression tests verify the method/path boundary. Full local HTTP verifies unsigned callback 401, authenticated malformed payload 400, real native HR-state refresh, durable inbox and safe replay. The new production candidate containing this fix is Ready. Its real HTTP authentication test passes: missing signature 401 / INVALID_EVENT_SIGNATURE; correct production HMAC with malformed empty event 400 / INVALID_REQUEST. No production inbox/business row is created by that test. Bridge package API without credentials returns 401. Canonical domains remain unchanged.
+
+## Custom document and developer-entry follow-up
+
+- Portal commit `242d387` removes the silent Homix Realty default for custom documents. The form requires an explicit company; selecting Homix Living was verified in the UI.
+- Real local HTTP exercised custom upload through Portal, private local S3, bridge and Documenso. Request `1ec92d21-1647-49e2-afcd-da73a673e4aa` maps to native `envelope_zwsdnknzzkdokzrb`, retains Homix Living in its business snapshot, deduplicates retry, and returns the original PDF bytes and exact owner's editor URL.
+- Native UI added Synthetic Custom Signer and two fields; both fields persisted after reload. Native Send changed the document to Pending; local Mailpit received one matching synthetic invitation. Portal returned to the same task and displayed the current recipient and waiting status. No final signature has been applied.
+- eSign commit `0ab670e` changes `pnpm dev` and the root environment example to bridge defaults, retaining explicitly named legacy commands only until the retirement gate. CI compiles all seven old/new Bicep entry points. Frozen offline dependency resolution and the matching Bicep/format checks passed.
+- The latest Portal candidate is Ready. Final native signature/seal acceptance, canonical cutover and removal of old native code/runtime remain outstanding pending the previously requested final-sign confirmation.
