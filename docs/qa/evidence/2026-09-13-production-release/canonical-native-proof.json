@@ -1,0 +1,16 @@
+{
+  "verifiedAt": "2026-09-13T05:32:04.323Z",
+  "canonicalNativeUrl": "https://esign.kevv.ai",
+  "engine": "documenso",
+  "version": "2.18.0",
+  "approvedHrPackages": 11,
+  "companyConnections": 2,
+  "nativeTemplatesReadable": 11,
+  "unauthenticatedBridge": 401,
+  "companySigner": {
+    "name": "Si Zhang",
+    "email": "hr@homixny.com"
+  },
+  "requestsCreated": 0,
+  "emailsSent": 0
+}

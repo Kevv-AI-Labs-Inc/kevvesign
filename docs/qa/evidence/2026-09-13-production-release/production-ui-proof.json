@@ -1,0 +1,14 @@
+{
+  "verifiedAt": "2026-09-13T05:25:20.591357+00:00",
+  "deploymentId": "dpl_JCKosGCrTxwEgf3Dfsx697MTC37n",
+  "gitCommit": "1f8e8108de95176f7454dbd3bec9667002163851",
+  "existingAdminSession": true,
+  "signingWorkspaceLoaded": true,
+  "adminSigningPackagesLoaded": 11,
+  "companyConnectionsLoaded": 2,
+  "onboardingPanelLoaded": true,
+  "unsignedIncompleteProfileCanRecordReceipt": true,
+  "ineligibleApprovalDisabled": true,
+  "noBusinessActionsSubmitted": true,
+  "personalRecordsOmitted": true
+}

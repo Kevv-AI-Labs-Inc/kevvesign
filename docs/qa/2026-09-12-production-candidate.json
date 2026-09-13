@@ -1,16 +1,13 @@
 {
-  "verifiedAt": "2026-09-13T04:44:56.291519+00:00",
-  "publicCutover": false,
+  "verifiedAt": "2026-09-13T05:35:03.626471+00:00",
+  "publicCutover": true,
   "portal": {
-    "sourceCommits": ["6058df3", "950cf19", "242d387"],
-    "deploymentId": "dpl_5ECwL4pswEqL4UN7BRnSoZBi9q6b",
-    "url": "https://homixliving-iwyama71e-erics-projects-9449aac9.vercel.app",
+    "deploymentId": "dpl_JCKosGCrTxwEgf3Dfsx697MTC37n",
+    "url": "https://homixliving-6inn1hssl-erics-projects-9449aac9.vercel.app",
     "status": "READY",
     "callbackUnsignedStatus": 401,
     "callbackAuthenticatedMalformedStatus": 400,
-    "localSourceCommit": "586d621",
-    "finalSourceUpload": "awaiting explicit payload authorization after automatic approval rejection",
-    "canonicalPromoted": false,
+    "canonicalPromoted": true,
     "finalBuild": {
       "command": "next build --webpack",
       "status": "PASSED",
@@ -20,10 +17,21 @@
       "targetedLint": true,
       "buildFix": "Move shared rental form out of page.tsx; form implementation preserved unchanged"
     },
-    "obsoleteEnvironmentPinsToRemove": 50
+    "sourceCommit": "1f8e8108de95176f7454dbd3bec9667002163851",
+    "pullRequest": "https://github.com/okjusthere/homixliving/pull/27",
+    "pullRequestHead": "0455b8caf715db140a2b12bde7991797bfb920b9",
+    "pullRequestCiRun": 34739792119,
+    "mainCiRun": 34739954893,
+    "ciStatus": "success",
+    "canonicalUrl": "https://agents.homixny.com",
+    "deploymentSource": "git",
+    "productionBranch": "main",
+    "obsoleteEnvironmentSettingsRemoved": 50,
+    "productionUiVerified": true,
+    "recordScope": "Functional release and verified runtime retirement; later documentation-only Git deployments preserve this application source."
   },
   "esign": {
-    "sourceCommit": "4800b44",
+    "sourceCommit": "b9fa1616743a5345e50a0c82022c908edd592e63",
     "bridgeImage": "sha256:8350858e5f3b01b935a6abbb53082a1304b87014f707deb0145e4d80bfda8494",
     "documensoImage": "sha256:126976b9e3be54193e1a3be8d22130af1913aaa894c550b98870a2cc4c422650",
     "version": "2.18.0",
@@ -33,20 +41,19 @@
       "email": "hr@homixny.com"
     },
     "temporaryBootstrapJobsRemoved": true,
-    "developmentAndCiCommit": "0ab670e",
     "gatewayImage": "sha256:bfec08cf750ee3c71375952537afcc10db7c9ac0dfb8b583b6624865f1bb7224",
     "canonicalUrl": "https://esign.kevv.ai",
     "canonicalCutover": true,
     "legacySourceRemoved": true,
-    "legacyApiStopped": false,
-    "legacyFinalizerEventTriggerDisabled": false
+    "legacyApiStopped": true,
+    "legacyFinalizerEventTriggerDisabled": true,
+    "pullRequest": "https://github.com/Kevv-AI-Labs-Inc/kevvesign/pull/12",
+    "pullRequestHead": "95659a83146bc5b7904d3954e1a116abdd696e58",
+    "pullRequestCiRun": 34739630403,
+    "mainCiRun": 34739720635,
+    "ciStatus": "success"
   },
-  "remainingReleaseGates": [
-    "authorized final Portal source upload and production deployment",
-    "Portal canonical promotion and callback smoke",
-    "stop legacy API revisions and disable legacy finalizer event trigger",
-    "remove obsolete Portal native environment pins"
-  ],
+  "remainingReleaseGates": [],
   "operationalInputs": [
     "Company-approved buyer/seller files before publishing those legal packages",
     "Per-agent native editor account setup"
@@ -75,5 +82,6 @@
     "unpaidAccountStayedPending": true,
     "syntheticOnly": true,
     "evidence": "evidence/2026-09-13-native-completion/acceptance.json"
-  }
+  },
+  "productionEvidence": "evidence/2026-09-13-production-release/"
 }
