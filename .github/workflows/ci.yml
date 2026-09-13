@@ -32,7 +32,6 @@ jobs:
           name: build-artifacts
           path: |
             apps/*/dist
-            packages/*/dist
           retention-days: 7
 
   secrets:
@@ -53,6 +52,6 @@ jobs:
         with:
           inlineScript: |
             set -eu
-            for template in main documenso signing-platform database-bootstrap documenso-runtime bridge-runtime native-bootstrap; do
+            for template in signing-platform database-bootstrap documenso-runtime bridge-runtime native-bootstrap; do
               az bicep build --file "infra/${template}.bicep" --stdout > /dev/null
             done

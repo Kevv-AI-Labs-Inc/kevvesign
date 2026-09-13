@@ -2,7 +2,7 @@
 
 Documenso is the sole signing engine for the new integration. `apps/bridge` provides the business API used by Homix Portal for agent onboarding, buyer/seller packages and custom documents. Documenso supplies its own editor, signer interface, delivery, completion and audit records. Portal owns onboarding business decisions, paper/historical contract verification, payments and access.
 
-**Release status (2026-09-12):** the new production Documenso and bridge are deployed, both company identities and 11 approved HR packages are configured, and the Portal candidate is built. Final synthetic signing/sealed-file acceptance and domain cutover are outstanding. The old production endpoints and native source remain until that acceptance passes; they are not a fallback in the new bridge.
+**Release status (2026-09-13):** real multi-recipient, sequential onboarding and custom signing completed in the pinned native engine. Sealed PDFs, cryptographic integrity, certificate/audit, Portal return and durable HR callbacks passed. `esign.kevv.ai` now serves Documenso through the existing TLS entry point; 11 approved HR packages and both company identities are verified on that domain. The final Portal deployment and stopping the old API/finalizer are the remaining coordinated release steps.
 
 ## Start here
 
@@ -24,7 +24,7 @@ pnpm exec vitest run apps/bridge/src/__tests__/contract.test.ts
 pnpm --filter @esign/bridge build
 ```
 
-The default development command starts the bridge. `dev:legacy` and the old native source are retained only for the outstanding retirement/rollback gate; they are not a bridge fallback.
+The default development command starts the bridge. The custom signing API/UI, PDF finalizer, workflows and their packages have been removed. Their Git history and archived IaC remain available for recovery; they are not part of the build. `apps/gateway` is a small Nginx proxy for the existing public hostname, with upstream certificate validation and no PDF/signing logic.
 
 The bridge listens on port 4100. `/health/live` identifies the engine/version; `/health/ready` checks its database and reconciliation loop. Backend callers authenticate with a bearer API key and a canonical Portal actor assertion; credentials never belong in browser code.
 

@@ -1,6 +1,6 @@
 # Documenso / bridge / Portal architecture
 
-The 2026-09-12 product plan and ADR 0002 replace the previous provider-neutral native platform. This document describes the new implementation. Old native services remain operational only until release acceptance and domain cutover; no new bridge operation can select or fall back to them.
+The 2026-09-12 product plan and ADR 0002 replace the previous provider-neutral native platform. This document describes the new implementation. The old native engine source and dependencies have been removed. The new bridge cannot select or fall back to them.
 
 ## Boundaries
 
@@ -32,7 +32,7 @@ Customer drafts can be edited in the native editor. Exact document URLs are retu
 
 Documenso events authenticate using the version-verified shared header. The bridge stores and deduplicates the event, then fetches authoritative native state. A periodic reconciliation loop repairs missed notifications. Portal callbacks carry HMAC authentication, are durable/retried and deduplicated again in Portal. Completed status, final files and account activation remain separate facts.
 
-Original/completed PDF, native certificate and audit downloads are authorized per task and proxied as upstream bytes. There is no new custom PDF finalizer. Final cryptographic/completion acceptance remains a release gate until recorded in the QA report.
+Original/completed PDF, native certificate and audit downloads are authorized per task and proxied as upstream bytes. There is no new custom PDF finalizer. Actual synthetic completion and cryptographic CMS integrity have been verified; native/bridge/Portal completed bytes match. See the QA report.
 
 ## Onboarding business state
 
@@ -45,3 +45,9 @@ The queue includes active accounts with unfinished company countersignature, con
 ## Deployment separation
 
 New Documenso and bridge share a private PostgreSQL server but use separate databases and restricted runtime logins. Neither runtime can connect to the other's database. Portal's existing database remains separate. SMTP uses a dedicated application scoped to the existing ACS mail resource; the independent Email Service is unchanged. The service integrity seal is self-signed, not an AATL or individual certificate.
+
+## Existing domain gateway
+
+`esign.kevv.ai` retains its existing Cloudflare DNS and Azure managed TLS binding. The former web app resource now runs the fixed official Nginx gateway image from `apps/gateway`; no old web bundle or signing endpoint runs in it. It proxies to the new native Documenso app with verified upstream TLS, canonical forwarded host/protocol, upload support and original response bytes. Both Documenso's public URL and bridge base URL use `https://esign.kevv.ai`. This avoids a DNS/TLS interruption across the old and new Azure environments.
+
+The gateway has no business database, signing credential or Portal key. Its existing registry configuration is preserved. Access URL logs are disabled because native recipient tokens occur in paths. `prepare-azure-update.py` creates a reviewable Azure update from a private snapshot while preserving the existing domain/certificate. It does not call Azure or modify other resources.

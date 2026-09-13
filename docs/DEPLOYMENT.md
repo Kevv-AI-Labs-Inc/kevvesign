@@ -82,3 +82,15 @@ Candidate: `https://homixliving-iwyama71e-erics-projects-9449aac9.vercel.app`, I
 - [ ] Record resource states, remaining retained costs and restore procedure.
 
 Before cutover, rollback means leave canonical domains on the existing release. After cutover, pause creation of new signing tasks before any rollback decision; do not send new work into two engines. Restore a tested prior bridge/Portal revision and diagnose Documenso rather than inventing native fallback. Old pending native drafts do not need migration, per the user's direction.
+
+## 2026-09-13 canonical native cutover
+
+The synthetic final-sign gate is complete: real multi-recipient, sequential onboarding and custom signing, native seal/CMS verification, certificate/audit, byte-identical downloads and actual Portal HR completion callbacks passed.
+
+The canonical domain is live on Documenso. Rather than move DNS between Azure environments, the existing `ca-web-kevvesign-prod` resource now runs only `apps/gateway`, preserving its already-valid `esign.kevv.ai` domain/certificate. Upstream TLS verification is enabled. It serves the new official native app; the old web bundle is absent. Gateway image: `sha256:bfec08cf750ee3c71375952537afcc10db7c9ac0dfb8b583b6624865f1bb7224`, revision `ca-web-kevvesign-prod--documenso-gw-20260913`. Native public URL is `https://esign.kevv.ai`, revision `ca-documenso-kevvesign-prod--canonical-20260913`.
+
+Bridge image after dependency retirement: `sha256:8350858e5f3b01b935a6abbb53082a1304b87014f707deb0145e4d80bfda8494`, revision `ca-esign-bridge-prod--documenso-only-20260913`, base URL `https://esign.kevv.ai`. Canonical smoke verifies health, native login, both company identities, all 11 approved packages and real native template reads.
+
+Use `apps/gateway/prepare-azure-update.py` with an `az containerapp show` snapshot, the pinned image, verified native hostname and unique revision suffix. It writes a private update file; review it before `az containerapp update --yaml`. Keep the private pre-cutover snapshot. The live gateway needs only registry pull access and no signing/API/database secret environment. Upstream host and canonical public host are explicit deployment values.
+
+The code retirement removed old applications/packages and archived old IaC without deleting historical SQL or file storage. The API/finalizer runtime stop and final Portal production promotion are tracked separately in the release record. No native fallback is included in any new artifact.

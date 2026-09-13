@@ -1,33 +1,29 @@
-# Threat model
+# Documenso integration threat model
 
-## Protected assets
+## Boundaries
 
-- Licensed PDFs, completed agreements, HR records, signatures, recipient contact data, and field values.
-- Invitation/session/API credentials, Key Vault signing keys, audit history, and evidence manifests.
-- Workspace membership, retention, legal-hold, template edition, and workflow configuration.
+Documenso owns electronic signing, recipient authentication, the final PDF and its audit. The bridge does not create signatures, rewrite sealed files or implement a fallback engine. Portal owns business approval, actual payments, manual contracts and limited access.
 
-## Principal abuse cases and controls
+| Risk                                           | Current control                                                                                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Forged Portal identity                         | Hashed client bearer key plus validated canonical actor assertion; server-only credentials                                           |
+| Cross-agent or HR access                       | Native delegated owner, separate private teams, verified connection proof, fresh ownership checks and Portal authorization           |
+| Wrong signer receives an HR action             | Exact verified email and bound recipient role; company identity from the verified company connection                                 |
+| Approved contract changes after publication    | PDF and native layout fingerprints; every role and required field validated; HR draft shape checked again before sending             |
+| Timeout creates duplicate envelopes            | Durable request intent, unique business idempotency keys, provider external ID recovery, exclusive operation leases                  |
+| Forged or repeated native webhook              | Connection-specific secret, team/owner/ID correlation, bounded payload and durable digest inbox                                      |
+| Dropped completion event                       | Native reconciliation, durable Portal outbox and HMAC callback with retries; Portal re-fetches authoritative state                   |
+| Completion or finance is invented              | Applicant, company and file readiness are independent; callback never fabricates a payment; Portal activation checks remain separate |
+| Sealed PDF is modified in transit              | Native bytes forwarded unchanged; completed status and exact native file membership checked before download                          |
+| Recipient tokens leak in logs                  | Bridge request/body redaction and minimized state projection; gateway access URL logs disabled                                       |
+| Customer changes business company accidentally | Explicit company selection for custom uploads; published package owns its company selection                                          |
+| Gateway intercepts upstream traffic            | Upstream TLS hostname and certificate validation enabled; canonical forwarded host/protocol fixed in deployment                      |
+| Runtime reaches unrelated database             | Separate PostgreSQL runtime accounts, cross-database connect denied and private network                                              |
 
-| Abuse case                                | Primary controls                                                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Mail scanner consumes invitation          | Invitation GET is side-effect-free; only POST exchanges it for a session                                                              |
-| Forwarded invitation is used              | Recipient-specific 256-bit link, expiry/revocation, accurate email-possession assurance, optional separately communicated access code |
-| Cross-workspace IDOR                      | Workspace is part of every repository lookup; foreign IDs return generic 404; isolation tests                                         |
-| CSRF against signer                       | SameSite cookies, server-stored session and CSRF hashes, matching custom header                                                       |
-| Integration launch ticket leaks           | Five-minute one-time ticket in URL fragment, POST exchange, no body logging, ticket/hash redaction, exact HTTPS return URL allowlist  |
-| Connector overstates employee role        | Delegated roles exclude administrators; eSign applies both role permissions and application scopes; every action has dual attribution |
-| Connector credential is revoked           | New API calls fail and all associated delegated browser sessions are invalidated immediately                                          |
-| Signing-engine webhook is forged/replayed | Constant-time shared-secret verification, bounded schema, event digest idempotency, provider/local ID correlation                     |
-| Signing engine and local state diverge    | External ID recovery, synchronization lock, provider-owned resend/cancel, explicit status projection, retryable completion            |
-| Token leakage through logs                | Structured logger redaction; no request body logging; URLs/cookies/auth/CSRF redacted                                                 |
-| Malicious or pathological PDF             | Size/type/magic check, parser limits, quarantine boundary, XFA/encryption rejection; production malware scan release gate             |
-| Webhook SSRF                              | HTTPS only, no credentials/custom ports, DNS resolution and private/link-local/loopback rejection, redirect disabled                  |
-| Replay/duplicate commands                 | Workspace-scoped idempotency key plus request digest, queue duplicate detection, webhook event IDs                                    |
-| Staff creates someone else's signature    | Recipient signature fields cannot be populated by staff merge data; signing mutation requires recipient session                       |
-| Completed record is altered/deleted       | Source/output hashes, canonical manifest signature, SQL Ledger audit, Blob locked retention and legal hold                            |
-| Sensitive values enter telemetry          | Redaction rules, safe audit payload allowlist behavior, tests scanning logs                                                           |
-| Compromised workload crosses environments | Separate managed identities, resource groups/subscriptions, stores, vaults, app registrations, email senders                          |
+## Limits
 
-## Accepted version-one limits
+A recipient link establishes the assurance Documenso actually records; it does not establish government identity. The configured P12 is a self-signed service integrity seal, not an AATL or personal identity certificate. HR verification and any exception authorization are separate audited Portal facts and never rewrite electronic signing state.
 
-Email invitation possession does not prove a particular natural person's government identity. Shared mailboxes and forwarded links weaken assurance. The completion certificate states the actual method and never claims KBA, ID verification, notarization, or qualified/digital-certificate status. Documenso integration reduces implementation risk but does not by itself establish legal suitability; production use still requires counsel-approved forms, disclosures, retention, and operating procedures.
+Formal buyer/seller files must be supplied and approved by the company before publication. Historical SQL and file storage are preserved after engine retirement; no legacy WORM/SQL Ledger claim is made for the new Documenso database transport.
+
+Unit coverage measures the bridge identity, native API, package and recipient-action boundaries. SQL/orchestration and actual native signing are verified separately against isolated PostgreSQL and the pinned official Documenso service; unit mocks do not establish final signing acceptance.

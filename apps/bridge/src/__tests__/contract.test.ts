@@ -6,7 +6,8 @@ import {
   sha256,
   templateFingerprint,
 } from '../documenso.js';
-import { authenticate } from '../auth.js';
+import { authenticate, webhookSecret } from '../auth.js';
+import { recipientIsCurrent } from '../recipient-access.js';
 import { loadBridgeConfig } from '../config.js';
 import {
   assertNativeOwner,
@@ -382,6 +383,48 @@ describe('trusted Portal identity', () => {
     ).toThrow('UNAUTHORIZED');
     expect(() =>
       authenticate({ authorization: 'Bearer trusted-key', 'x-portal-actor': actor([]) }, settings),
+    ).toThrow('INVALID_PORTAL_ACTOR');
+  });
+});
+
+describe('recipient actions follow authoritative native order', () => {
+  it('keeps company waiting until the owner signs, rejects expiry and completed tokens', () => {
+    const native = document();
+    native.status = 'PENDING';
+    let projection = projectEnvelope(native, []);
+    expect(recipientIsCurrent(projection, 1)).toBe(true);
+    expect(recipientIsCurrent(projection, 2)).toBe(false);
+    expect(recipientIsCurrent(projection, 99)).toBe(false);
+    native.recipients[0].signingStatus = 'SIGNED';
+    native.recipients[0].signedAt = at;
+    projection = projectEnvelope(native, []);
+    expect(recipientIsCurrent(projection, 1)).toBe(false);
+    expect(recipientIsCurrent(projection, 2)).toBe(true);
+    native.recipients[1].expiresAt = '2000-01-01T00:00:00.000Z';
+    expect(recipientIsCurrent(projectEnvelope(native, []), 2)).toBe(false);
+    native.status = 'COMPLETED';
+    expect(recipientIsCurrent(projectEnvelope(native, []), 2)).toBe(false);
+    native.status = 'PENDING';
+    native.recipients[1].expiresAt = null;
+    native.documentMeta!.signingOrder = 'PARALLEL';
+    expect(recipientIsCurrent(projectEnvelope(native, []), 2)).toBe(true);
+  });
+  it('binds webhook authentication to a specific native connection', () => {
+    const config = loadBridgeConfig({
+      NODE_ENV: 'test',
+      DOCUMENSO_BASE_URL: 'http://localhost:3469',
+      ESIGN_DATABASE_URL: 'postgres://localhost/qa',
+      ESIGN_CREDENTIAL_KEY: '0'.repeat(64),
+      ESIGN_WEBHOOK_SECRET: 'synthetic-secret'.repeat(4),
+      ESIGN_PORTAL_CLIENTS_JSON: JSON.stringify([
+        { id: 'qa', keyHash: sha256('key'), portalOrigin: 'http://localhost:3000' },
+      ]),
+    });
+    expect(webhookSecret(config, 'connection-a')).toHaveLength(64);
+    expect(webhookSecret(config, 'connection-a')).not.toBe(webhookSecret(config, 'connection-b'));
+    expect(() => authenticate({}, config)).toThrow('UNAUTHORIZED');
+    expect(() =>
+      authenticate({ authorization: 'Bearer key', 'x-portal-actor': 'invalid-json' }, config),
     ).toThrow('INVALID_PORTAL_ACTOR');
   });
 });
