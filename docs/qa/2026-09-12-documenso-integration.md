@@ -41,3 +41,11 @@ The local browser uses disposable `example.invalid` accounts, isolated PostgreSQ
 7. Customer editor accounts require per-agent native identity/team setup and a verified connection. HR is configured; ordinary agent connections have not been mass-created.
 
 The service P12 is a self-signed integrity seal, not an AATL/personal certificate. Final sealing remains unverified until real synthetic completion. Existing Supabase security-advisor warnings predate this change (mutable search paths and an unrelated RLS helper executable by public app roles); the new tables' no-policy INFO is intentional server-only access.
+
+## Final source checkpoint
+
+Portal source commits `6058df3` and `950cf19`; eSign bridge source commit `8d1c82d`. Latest local Portal production build and targeted storage/pending-session regressions passed. ESLint has zero errors and one pre-existing generated workflow warning. Per-agent real-session training authorization and same-JWT revocation both passed.
+
+Final Portal candidate `dpl_DLX4Uq9Yd4uMmYuwJV5dcGEjHV16` / `https://homixliving-z8c7nnnum-erics-projects-9449aac9.vercel.app` is **Ready**; it includes the latest source fixes and was deployed with `--skip-domain`. No canonical domain promotion, actual signature or native retirement has occurred.
+
+Candidate smoke found and fixed a middleware issue: the exact POST `/api/signing/events` must reach its HMAC handler without a browser session. All other signing routes remain protected. Regression tests verify the method/path boundary. Full local HTTP verifies unsigned callback 401, authenticated malformed payload 400, real native HR-state refresh, durable inbox and safe replay. The new production candidate containing this fix is Ready. Its real HTTP authentication test passes: missing signature 401 / INVALID_EVENT_SIGNATURE; correct production HMAC with malformed empty event 400 / INVALID_REQUEST. No production inbox/business row is created by that test. Bridge package API without credentials returns 401. Canonical domains remain unchanged.

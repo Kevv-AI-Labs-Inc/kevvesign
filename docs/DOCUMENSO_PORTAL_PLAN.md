@@ -1,7 +1,8 @@
 # Documenso + Portal：eSign 目标对齐与实施计划
 
-日期：2026-09-12  
-状态：实施中；bridge、Portal 接入和本机真实 Documenso 验证已有进展，生产切换与 native 退役尚未完成。  
+日期：2026-09-12
+
+状态：实施中；bridge、Portal 接入和本机真实 Documenso 验证已有进展，生产切换与 native 退役尚未完成。
 核对基线：eSign `1d3e1bd`，Portal `a02c539`。
 
 ## 1. 产品定义
@@ -340,7 +341,7 @@ Portal 细节与未完成验收见相邻仓库 `docs/plans/2026-09-12-signing-on
 
 新 Documenso 与 bridge 已健康运行；两家公司会签账号、11 个批准的空白 HR 包、独立私网数据库账号、认证 webhook、SMTP TLS/认证和自签服务完整性证书已配置。两个临时初始化任务已成功完成并移除。
 
-Portal 新增迁移已应用，候选部署已 Ready；最终 UI 修复后正在重建候选。官网域名和旧运行时尚未切换。客户编辑账号需要逐人绑定，正式买卖文件仍待公司提供。
+Portal 新增迁移已应用，候选部署已 Ready；最终 UI 与回调中间层修复后，新候选 `dpl_DLX4Uq9Yd4uMmYuwJV5dcGEjHV16` 已 Ready，生产 HMAC 边界检查通过。官网域名和旧运行时尚未切换。客户编辑账号需要逐人绑定，正式买卖文件仍待公司提供。
 
 eSign 全量 `pnpm verify` 通过 60 个测试和全部构建。手机端纸质合同上传/核验/文件字节与权限、培训限定权限和同一会话即时撤销已验证。最终原生合成 Sign 尚待先前发出的用户确认，完成 PDF/证书/审计证明、最终域名切换及 native 退役仍未完成。
 

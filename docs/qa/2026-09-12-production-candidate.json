@@ -1,0 +1,34 @@
+{
+  "verifiedAt": "2026-09-13T03:22:42.065217+00:00",
+  "publicCutover": false,
+  "portal": {
+    "sourceCommits": ["6058df3", "950cf19"],
+    "deploymentId": "dpl_DLX4Uq9Yd4uMmYuwJV5dcGEjHV16",
+    "url": "https://homixliving-z8c7nnnum-erics-projects-9449aac9.vercel.app",
+    "status": "READY",
+    "callbackUnsignedStatus": 401,
+    "callbackAuthenticatedMalformedStatus": 400
+  },
+  "esign": {
+    "sourceCommit": "8d1c82d",
+    "bridgeImage": "sha256:b17f6f0a77eb8e880d1052e6ba5f51ff05a0e9060b716f769557aefb0fb28905",
+    "documensoImage": "sha256:126976b9e3be54193e1a3be8d22130af1913aaa894c550b98870a2cc4c422650",
+    "version": "2.18.0",
+    "approvedHrPackages": 11,
+    "companySigner": {
+      "name": "Si Zhang",
+      "email": "hr@homixny.com"
+    },
+    "temporaryBootstrapJobsRemoved": true
+  },
+  "remainingReleaseGates": [
+    "final native synthetic completion, seal, certificate and audit acceptance",
+    "remaining native scenario acceptance",
+    "canonical domain cutover",
+    "legacy native code and runtime retirement"
+  ],
+  "operationalInputs": [
+    "Company-approved buyer/seller files before publishing those legal packages",
+    "Per-agent native editor account setup"
+  ]
+}

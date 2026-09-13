@@ -68,7 +68,7 @@ The generated 4096-bit RSA P12 is a **self-signed service integrity seal**, vali
 
 Supabase project `wnshsoxtxkfbphglyvmj` (homix) has migration `signing_onboarding_workspaces` applied. Five new tables have RLS enabled and no anon/authenticated grants; the server DB role supplies access after Portal authorization. No real agent state or existing contracts were changed by this migration.
 
-Candidate: `https://homixliving-h3vuwrnvn-erics-projects-9449aac9.vercel.app`, ID `dpl_3WxVbmPmhZCkNdB5bXzrXBBomQgo`, built Ready using `--prod --skip-domain`. This candidate predates the final local HR date/audit-label and isolated-storage support fixes; deploy the final source again before promoting. The public domains have not been reassigned. Production API unauthenticated access redirects to login.
+Candidate: `https://homixliving-z8c7nnnum-erics-projects-9449aac9.vercel.app`, ID `dpl_DLX4Uq9Yd4uMmYuwJV5dcGEjHV16`, built Ready using `--prod --skip-domain`. This includes the final HR UI, local storage guard and exact callback routing fix. Public domains have not been reassigned. Real candidate HTTP checks confirm missing callback HMAC returns 401, and the correct production HMAC over an empty malformed event returns 400 without writing business data. Signing workspace access remains protected by login.
 
 ## Cutover checklist
 
