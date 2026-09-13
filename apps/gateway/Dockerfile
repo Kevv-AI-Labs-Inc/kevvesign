@@ -1,0 +1,4 @@
+FROM nginx@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+ENV NGINX_ENVSUBST_FILTER="^(DOCUMENSO_ORIGIN_HOST|PUBLIC_SIGNING_HOST|DNS_RESOLVER)$"
+COPY apps/gateway/default.conf.template /etc/nginx/templates/default.conf.template
+EXPOSE 8080

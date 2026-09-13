@@ -6,3 +6,13 @@ coverage
 test-results
 playwright-report
 openspec
+.env
+.env.*
+!**/.env.example
+**/*.local
+**/*.local.*
+**/*.p12
+**/*.pem
+**/*.key
+.uploads
+.outbox

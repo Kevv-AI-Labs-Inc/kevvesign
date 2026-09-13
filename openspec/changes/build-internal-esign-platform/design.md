@@ -1,3 +1,5 @@
+> **Superseded product scope (2026-09-12).** Keep this as historical context. New work follows [the Documenso + Portal plan](../../../docs/DOCUMENSO_PORTAL_PLAN.md) and ADR 0002; do not resume implementation of the custom signing platform from this checklist.
+
 ## Context
 
 The workspace is a greenfield project. The platform will be shared by several internal applications but is not intended to become a public multi-tenant SaaS. Initial business coverage is licensed real-estate work in New York, New Jersey, and California plus ordinary US employee onboarding. External recipients are expected to be consumers who should not need an account and should normally complete signing from a mobile device after opening one invitation email.

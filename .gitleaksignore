@@ -1,0 +1,9 @@
+# Reviewed false positives, limited to exact historical findings.
+# Empty ESIGN_WEBHOOK_SECRET followed by the nonsecret polling variable name.
+0ab670e308a9175caf56a1a6e77b1d937f42163f:.env.example:generic-api-key:9
+8d1c82d64db9dac90bbeeff030050892ec8cf482:apps/bridge/.env.example:generic-api-key:9
+# Ordinary QA prose about expiring permissions is not a credential.
+8d1c82d64db9dac90bbeeff030050892ec8cf482:docs/qa/2026-09-12-documenso-integration.md:generic-api-key:18
+
+# Retired FakeSigningEngine test uses a sequential-digit dummy on example.test.
+ebe7a44ab2843a0a6ebd48522cdd688168cc32d3:apps/api/src/signing-engine.test.ts:generic-api-key:129

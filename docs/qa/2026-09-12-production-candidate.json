@@ -1,0 +1,79 @@
+{
+  "verifiedAt": "2026-09-13T04:44:56.291519+00:00",
+  "publicCutover": false,
+  "portal": {
+    "sourceCommits": ["6058df3", "950cf19", "242d387"],
+    "deploymentId": "dpl_5ECwL4pswEqL4UN7BRnSoZBi9q6b",
+    "url": "https://homixliving-iwyama71e-erics-projects-9449aac9.vercel.app",
+    "status": "READY",
+    "callbackUnsignedStatus": 401,
+    "callbackAuthenticatedMalformedStatus": 400,
+    "localSourceCommit": "586d621",
+    "finalSourceUpload": "awaiting explicit payload authorization after automatic approval rejection",
+    "canonicalPromoted": false,
+    "finalBuild": {
+      "command": "next build --webpack",
+      "status": "PASSED",
+      "staticPages": 120,
+      "compile": true,
+      "typecheck": true,
+      "targetedLint": true,
+      "buildFix": "Move shared rental form out of page.tsx; form implementation preserved unchanged"
+    },
+    "obsoleteEnvironmentPinsToRemove": 50
+  },
+  "esign": {
+    "sourceCommit": "4800b44",
+    "bridgeImage": "sha256:8350858e5f3b01b935a6abbb53082a1304b87014f707deb0145e4d80bfda8494",
+    "documensoImage": "sha256:126976b9e3be54193e1a3be8d22130af1913aaa894c550b98870a2cc4c422650",
+    "version": "2.18.0",
+    "approvedHrPackages": 11,
+    "companySigner": {
+      "name": "Si Zhang",
+      "email": "hr@homixny.com"
+    },
+    "temporaryBootstrapJobsRemoved": true,
+    "developmentAndCiCommit": "0ab670e",
+    "gatewayImage": "sha256:bfec08cf750ee3c71375952537afcc10db7c9ac0dfb8b583b6624865f1bb7224",
+    "canonicalUrl": "https://esign.kevv.ai",
+    "canonicalCutover": true,
+    "legacySourceRemoved": true,
+    "legacyApiStopped": false,
+    "legacyFinalizerEventTriggerDisabled": false
+  },
+  "remainingReleaseGates": [
+    "authorized final Portal source upload and production deployment",
+    "Portal canonical promotion and callback smoke",
+    "stop legacy API revisions and disable legacy finalizer event trigger",
+    "remove obsolete Portal native environment pins"
+  ],
+  "operationalInputs": [
+    "Company-approved buyer/seller files before publishing those legal packages",
+    "Per-agent native editor account setup"
+  ],
+  "customAcceptance": {
+    "company": "homix_living",
+    "portalRequestId": "1ec92d21-1647-49e2-afcd-da73a673e4aa",
+    "nativeDocumentId": "envelope_zwsdnknzzkdokzrb",
+    "originalBytesPreserved": true,
+    "retryDeduplicated": true,
+    "nativeFieldsPersistedAfterReload": 2,
+    "nativeStatus": "COMPLETED",
+    "nativeSendVerified": true,
+    "mailpitInvitationReceived": true,
+    "portalStatus": "completed",
+    "finalSignaturePerformed": true
+  },
+  "nativeCompletionAcceptance": {
+    "multiRecipientMultiFile": true,
+    "sequentialOnboarding": true,
+    "customNativeEditor": true,
+    "sealCmsVerified": true,
+    "certificateAndAuditDownloaded": true,
+    "bytePreservingDownloads": true,
+    "realPortalCallbacks": true,
+    "unpaidAccountStayedPending": true,
+    "syntheticOnly": true,
+    "evidence": "evidence/2026-09-13-native-completion/acceptance.json"
+  }
+}

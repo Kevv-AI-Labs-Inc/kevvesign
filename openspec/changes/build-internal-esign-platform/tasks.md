@@ -1,3 +1,5 @@
+> **Superseded product scope (2026-09-12).** Keep this as historical context. New work follows [the Documenso + Portal plan](../../../docs/DOCUMENSO_PORTAL_PLAN.md) and ADR 0002; do not resume implementation of the custom signing platform from this checklist.
+
 ## 1. Product, Legal, and Ownership Gates
 
 - [x] 1.1 Record the approved v1 scope, non-goals, and Azure decision in the repository ADR index
