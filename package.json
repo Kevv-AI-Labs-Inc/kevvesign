@@ -20,7 +20,7 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "dev": "pnpm --parallel --filter @esign/api --filter @esign/web dev",
+    "dev": "pnpm --filter @esign/bridge dev",
     "dev:api": "pnpm --filter @esign/api dev",
     "dev:web": "pnpm --filter @esign/web dev",
     "typecheck": "pnpm -r --if-present typecheck",
@@ -31,7 +31,8 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "audit": "pnpm audit --audit-level high",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build"
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
+    "dev:legacy": "pnpm --parallel --filter @esign/api --filter @esign/web dev"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

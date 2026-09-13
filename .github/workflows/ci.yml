@@ -52,5 +52,7 @@ jobs:
       - uses: azure/cli@v2
         with:
           inlineScript: |
-            az bicep build --file infra/main.bicep --stdout > /dev/null
-            az bicep build --file infra/documenso.bicep --stdout > /dev/null
+            set -eu
+            for template in main documenso signing-platform database-bootstrap documenso-runtime bridge-runtime native-bootstrap; do
+              az bicep build --file "infra/${template}.bicep" --stdout > /dev/null
+            done
