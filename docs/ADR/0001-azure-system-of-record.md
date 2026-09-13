@@ -1,5 +1,7 @@
 # ADR 0001: Azure as the system of record
 
+> Partially superseded on 2026-09-12 by [ADR 0002](0002-documenso-portal-tool.md). Azure may remain the hosting platform, but a separate custom signing engine and authoritative evidence platform are no longer the product goal.
+
 - Status: Accepted for implementation; production activation awaits Azure and business release gates.
 - Date: 2026-08-10
 

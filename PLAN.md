@@ -1,3 +1,5 @@
+> **Superseded product scope (2026-09-12).** This document records the earlier custom e-signature platform plan. The user has replaced that goal with a Documenso-based Portal tool for three company workflows, with no legacy native signing compatibility requirement. Use [the current plan](docs/DOCUMENSO_PORTAL_PLAN.md) and ADR 0002 for new work.
+
 # Internal E-Sign Platform Plan
 
 ## 1. Executive Summary

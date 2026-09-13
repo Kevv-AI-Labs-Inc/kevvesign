@@ -1,3 +1,5 @@
+> **Superseded product scope (2026-09-12).** This document records the earlier custom e-signature platform plan. The user has replaced that goal with a Documenso-based Portal tool for three company workflows, with no legacy native signing compatibility requirement. Use [the current plan](../../../docs/DOCUMENSO_PORTAL_PLAN.md) and ADR 0002 for new work.
+
 ## Why
 
 The organization repeatedly needs electronic signatures across North American real-estate products and employee onboarding, while commercial per-seat e-signature services are too expensive and fragment documents across projects. A private, shared platform is needed now to provide a consistent signing experience, defensible evidence, centralized retention, and a reusable integration boundary for current and future internal applications.

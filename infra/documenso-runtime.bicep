@@ -1,0 +1,254 @@
+targetScope = 'resourceGroup'
+
+@description('Azure region of the existing Container Apps environment.')
+param location string = resourceGroup().location
+
+@description('Existing Container Apps managed environment name.')
+param containerAppsEnvironmentName string
+
+@description('Existing Key Vault name containing Documenso secrets.')
+param keyVaultName string
+
+@description('Existing Azure Database for PostgreSQL flexible server used by Documenso.')
+param postgresServerName string
+
+@description('Public HTTPS URL used in Documenso links and callbacks.')
+param publicWebappUrl string
+
+@description('Custom hostname already validated for the Documenso Container App.')
+param customHostname string = ''
+
+@description('Existing Azure managed certificate bound to the custom hostname.')
+param managedCertificateName string = ''
+
+@description('Pinned Documenso image. Upgrade intentionally after backup and validation.')
+param image string = 'documenso/documenso@sha256:126976b9e3be54193e1a3be8d22130af1913aaa894c550b98870a2cc4c422650'
+
+@description('Sender address already provisioned in Azure Communication Services Email.')
+param smtpFromAddress string = 'esign@esign.kevv.ai'
+
+@description('Azure Communication Services SMTP username.')
+param smtpUsername string
+
+param appName string = 'ca-documenso-kevvesign-prod'
+param secretPrefix string = 'documenso-prod'
+param environmentName string = 'production'
+var identityName = 'id-${appName}'
+var keyVaultSecretsUserRoleDefinitionId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '4633458b-17de-408a-b874-0445c86b69e6'
+)
+
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: containerAppsEnvironmentName
+}
+
+resource managedCertificate 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' existing = {
+  parent: containerAppsEnvironment
+  name: managedCertificateName
+}
+
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: keyVaultName
+}
+
+resource postgresServer 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' existing = {
+  name: postgresServerName
+}
+
+resource postgresExtensions 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2024-08-01' = {
+  parent: postgresServer
+  name: 'azure.extensions'
+  properties: {
+    source: 'user-override'
+    value: 'pgcrypto,pg_trgm'
+  }
+}
+
+resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: identityName
+  location: location
+  tags: {
+    application: 'documenso'
+    environment: environmentName
+    managedBy: 'bicep'
+  }
+}
+
+var secretNames = ['database-url', 'nextauth-secret', 'encryption-key', 'encryption-secondary-key', 'signing-passphrase', 'signing-cert-base64', 'smtp-app-secret']
+resource nativeSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = [for name in secretNames: {
+  parent: keyVault
+  name: '${secretPrefix}-${name}'
+}]
+resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (name, i) in secretNames: {
+  name: guid(nativeSecrets[i].id, identity.id, keyVaultSecretsUserRoleDefinitionId)
+  scope: nativeSecrets[i]
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: keyVaultSecretsUserRoleDefinitionId
+  }
+}]
+
+resource documenso 'Microsoft.App/containerApps@2024-03-01' = {
+  name: appName
+  location: location
+  tags: {
+    application: 'documenso'
+    environment: environmentName
+    managedBy: 'bicep'
+  }
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${identity.id}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerAppsEnvironment.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      maxInactiveRevisions: 3
+      ingress: {
+        external: true
+        targetPort: 3000
+        transport: 'http'
+        allowInsecure: false
+        customDomains: empty(customHostname) ? [] : [
+          {
+            name: customHostname
+            bindingType: 'SniEnabled'
+            certificateId: managedCertificate.id
+          }
+        ]
+      }
+      secrets: [
+        {
+          name: 'database-url'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-database-url'
+          identity: identity.id
+        }
+        {
+          name: 'nextauth-secret'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-nextauth-secret'
+          identity: identity.id
+        }
+        {
+          name: 'encryption-key'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-encryption-key'
+          identity: identity.id
+        }
+        {
+          name: 'encryption-secondary-key'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-encryption-secondary-key'
+          identity: identity.id
+        }
+        {
+          name: 'signing-passphrase'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-signing-passphrase'
+          identity: identity.id
+        }
+        {
+          name: 'signing-certificate'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-signing-cert-base64'
+          identity: identity.id
+        }
+        {
+          name: 'smtp-password'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${secretPrefix}-smtp-app-secret'
+          identity: identity.id
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'documenso'
+          image: image
+          command: ['/bin/sh']
+          args: [
+            '-ec'
+            'cd /app/apps/remix && . ./start.sh'
+          ]
+          env: [
+            { name: 'PORT', value: '3000' }
+            { name: 'NEXTAUTH_SECRET', secretRef: 'nextauth-secret' }
+            { name: 'NEXT_PRIVATE_ENCRYPTION_KEY', secretRef: 'encryption-key' }
+            {
+              name: 'NEXT_PRIVATE_ENCRYPTION_SECONDARY_KEY'
+              secretRef: 'encryption-secondary-key'
+            }
+            { name: 'NEXT_PUBLIC_WEBAPP_URL', value: publicWebappUrl }
+            { name: 'NEXT_PRIVATE_INTERNAL_WEBAPP_URL', value: 'http://localhost:3000' }
+            { name: 'NEXT_PRIVATE_DATABASE_URL', secretRef: 'database-url' }
+            { name: 'NEXT_PRIVATE_DIRECT_DATABASE_URL', secretRef: 'database-url' }
+            { name: 'NEXT_PUBLIC_UPLOAD_TRANSPORT', value: 'database' }
+            { name: 'NEXT_PUBLIC_DOCUMENT_SIZE_UPLOAD_LIMIT', value: '25' }
+            { name: 'NEXT_PRIVATE_SIGNING_TRANSPORT', value: 'local' }
+            {
+              name: 'NEXT_PRIVATE_SIGNING_LOCAL_FILE_CONTENTS'
+              secretRef: 'signing-certificate'
+            }
+            { name: 'NEXT_PRIVATE_SIGNING_PASSPHRASE', secretRef: 'signing-passphrase' }
+            { name: 'NEXT_PRIVATE_SMTP_TRANSPORT', value: 'smtp-auth' }
+            { name: 'NEXT_PRIVATE_SMTP_HOST', value: 'smtp.azurecomm.net' }
+            { name: 'NEXT_PRIVATE_SMTP_PORT', value: '587' }
+            { name: 'NEXT_PRIVATE_SMTP_SECURE', value: 'false' }
+            { name: 'NEXT_PRIVATE_SMTP_USERNAME', value: smtpUsername }
+            { name: 'NEXT_PRIVATE_SMTP_PASSWORD', secretRef: 'smtp-password' }
+            { name: 'NEXT_PRIVATE_SMTP_FROM_NAME', value: 'Kevv eSign' }
+            { name: 'NEXT_PRIVATE_SMTP_FROM_ADDRESS', value: smtpFromAddress }
+            { name: 'NEXT_PUBLIC_DISABLE_SIGNUP', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_EMAIL_PASSWORD_SIGNUP', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_GOOGLE_SIGNUP', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_MICROSOFT_SIGNUP', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_OIDC_SIGNUP', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_GOOGLE_SIGNIN', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_MICROSOFT_SIGNIN', value: 'true' }
+            { name: 'NEXT_PUBLIC_DISABLE_OIDC_SIGNIN', value: 'true' }
+            { name: 'DOCUMENSO_DISABLE_TELEMETRY', value: 'true' }
+          ]
+          resources: {
+            cpu: json('1.0')
+            memory: '2Gi'
+          }
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/api/health'
+                port: 3000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/api/health'
+                port: 3000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 30
+              periodSeconds: 15
+              timeoutSeconds: 10
+              failureThreshold: 10
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 1
+      }
+    }
+  }
+  dependsOn: [keyVaultSecretsUser, postgresExtensions]
+}
+
+output appName string = documenso.name
+output fqdn string = documenso.properties.configuration.ingress.fqdn
+output publicUrl string = 'https://${documenso.properties.configuration.ingress.fqdn}'

@@ -1,40 +1,47 @@
-# Architecture
+# Documenso / bridge / Portal architecture
 
-The system is a TypeScript modular monolith with four deployable units: the React web surface, Fastify API, Durable Functions workflow host, and isolated PDF finalizer job. Shared packages own public contracts, domain rules, and Azure/local adapters.
+The 2026-09-12 product plan and ADR 0002 replace the previous provider-neutral native platform. This document describes the new implementation. Old native services remain operational only until release acceptance and domain cutover; no new bridge operation can select or fall back to them.
 
-## Trust boundaries
+## Boundaries
 
-1. HR, agents, and managers normally authenticate in a connected system. Homix Portal is the first connector. Any connector backend uses its own scoped `X-ESign-Key` and stable `connectorKey` to issue a five-minute, one-time eSign launch for a named actor and an exact allowlisted return URL.
-2. The launch ticket is placed after `#` in the redirect URL, exchanged once through POST, and replaced by a one-hour HttpOnly `esign_staff` cookie plus CSRF token. The resulting principal is constrained by the asserted non-admin role and the source application's scopes.
-3. Internal project API calls use separately scoped `X-ESign-Key` credentials. Each credential is workspace-bound and assigned exactly one business domain, `HR` or `REAL_ESTATE`; domain checks apply in addition to scopes on every template, transaction, envelope, integration-session, and evidence path. Only a SHA-256 secret hash is stored. Credentials are expirable, rotatable, and revocable, and revocation also invalidates delegated sessions.
-4. Standalone administrator access is an exception path for template governance, credential management, audit, and recovery. A provider registry verifies configured OIDC issuers and audiences; Google Workspace, Entra, or another standards-compliant provider can be added without changing authorization code.
-5. Recipients enter through a high-entropy invitation. The GET route is side-effect-free. JavaScript exchanges the invitation through POST for a bounded HttpOnly session and CSRF token.
-6. PDF source and evidence objects are private. Only the API/finalizer managed identities can access them. Queue messages carry object references and expected hashes, never raw documents or signing credentials.
+| Component                 | Responsibilities                                                                                                                                                                           | Storage                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| Portal                    | Canonical agent identity and aliases; `/pending`, `/signing`, admin onboarding; actual receipts, manual contracts, access and activation                                                   | Existing Portal PostgreSQL; private R2 for manually uploaded HR PDFs         |
+| `apps/bridge`             | Trusted caller authentication; per-agent/company native connections; versioned package references; idempotent preparation; task projections; authenticated webhook inbox and Portal outbox | Separate `esign_bridge` PostgreSQL database, AES-GCM encrypted native tokens |
+| Official Documenso 2.18.0 | Native editor/signing UI, documents/templates, recipients/routing, invitations/reminders, signed PDF, certificate/audit                                                                    | Separate `documenso` database, database upload transport                     |
 
-## State invariants
+Portal and bridge do not mark a recipient signed. Browser return parameters do not establish signature facts. Manual contract verification satisfies an explicit business requirement without changing Documenso's electronic state.
 
-- Published template versions and sent envelope content are immutable.
-- Connectors may pin an expected published template version and schema hash during envelope creation; mismatches fail atomically before an envelope is created.
-- All commands are transition-checked and repeat-prone writes require idempotency keys.
-- A routing group activates only after all required recipients in the previous group complete.
-- Completion is visible only after PDF generation, hash verification, manifest signing, and evidence commit.
-- Audit payloads exclude document content, signature marks, tokens, access codes, and field values.
-- An envelope sent through an external provider freezes its `signingProviderConnectionId`; changing the workspace mapping cannot move that envelope to another provider account.
+## Identity and visibility
 
-## Local substitutes
+The bridge key identifies a trusted Portal backend. `X-Portal-Actor` is a base64url assertion produced server-side from the canonical agent ID, current admin permission and verified login aliases. It is not a browser authentication mechanism. Portal APIs independently authorize each operation and re-read limited access where necessary.
 
-Local development stores state in an atomic JSON file, private objects under `.data/objects`, email messages under `.data/outbox`, and manifests with a development HMAC. These substitutes exercise the same interfaces as Azure and are prohibited in production by configuration validation.
+Customer connections bind the canonical agent to an actual native user/team and a real owned proof document. Customer documents are created with delegated ownership and `ADMIN` visibility; they must remain in isolated teams without ordinary cross-agent membership or inherited access. Each upstream document is checked against the connection owner and team. Registration requires independent native isolation evidence; it does not claim that matching an email alone proves isolation.
 
-## Source-project integration boundary
+HR has one separate company connection per legal entity. Both currently use the user-confirmed **Si Zhang / hr@homixny.com**. This signing identity is independent of the Portal administrator's display name. An applicant can open only their assigned recipient link; the company signer can open their own link when their routing turn is current. Portal admin status does not impersonate Si Zhang.
 
-Calling applications can list published templates, create property/HR transaction folders, create and send envelopes, query status, void envelopes, and retrieve evidence when their credential includes the corresponding scope. For interactive PDF field placement or envelope preparation, the source backend creates a one-time integration session with `dashboard`, `prepare-envelope`, `edit-template`, or `view-envelope` intent and redirects the browser to eSign. Version one uses a top-level redirect rather than an iframe to avoid third-party-cookie and framing-policy failures.
+An API token stays encrypted in the bridge database. Key Vault supplies the encryption key and runtime secrets through per-secret managed-identity grants. Customer tokens, HR tokens and shared webhook secrets never appear in ordinary Portal API responses or client bundles. The dedicated administrator connection setup UI may accept a token and show webhook configuration to an authorized administrator for setup.
 
-Every delegated audit event records both the stable external actor subject and the source application-client ID. The source credential is never exposed. Workspace administration and credential management cannot be delegated through an integration session.
+## Packages and lifecycle
 
-## Signing-engine boundary
+Published packages pin native template IDs, original PDF SHA-256 hashes, field/recipient metadata and roles. A package has a stable key, immutable version, company, scenario and selectors. Repeated business prefill keys must have compatible native types/options. Shared fields are entered once; role, file, page and coordinates disambiguate repeated labels.
 
-The domain depends on a small `SigningEngine` port, not Documenso types. A runtime connection registry resolves `Workspace.signingProviderConnectionId` to a configured adapter. An unmapped workspace uses the native engine; merely deploying or configuring the Homix Documenso service does not opt a workspace into it. On the first external send, the resolved connection ID is copied to the envelope and remains authoritative for every later provider operation. Moving new work to another Documenso account therefore means registering a new connection ID and updating the workspace mapping while retaining the old connection for in-flight and completed envelopes.
+Preparation snapshots the published definition and records a durable intent before creating upstream drafts. External IDs let retries locate already-created native documents. Sending re-reads native status; uncertain/partial operations stay recoverable. HR drafts are controlled: before bridge distribution, the recipients, routing, prefilled fields, geometry and original PDF hashes must still match the prepared package. HR admins remain privileged in native Documenso; the bridge guard is not a replacement for native administrator governance.
 
-In Documenso mode, the adapter owns creation, delivery, routing, resend, cancellation, signing status, and retrieval of sealed PDFs. Kevv eSign owns connector identities, template licensing metadata, real-estate/HR transaction context, local projections, audit correlation, retention, and evidence manifests. Provider IDs are stored explicitly so duplicate/shared email addresses do not become the primary identity key. Provider API tokens and webhook secrets are deployment secrets: Azure stores them only in Key Vault and resolves them through managed identity; they never enter workspace state, application credentials, source-control files, or browser code.
+Customer drafts can be edited in the native editor. Exact document URLs are returned only after ownership checks; Portal remains at the same task and preserves its search/filter context. A signing continuation resolves the same active native document and exact recipient, rather than making a new document on every click.
 
-Webhook authentication happens before state lookup or event processing. Event digests provide replay protection. A completed event is acknowledged only after every expected PDF has been retrieved, validated as a PDF, hashed, stored, and finalized; provider-sealed PDFs are never rewritten because doing so would invalidate their digital seal.
+Documenso events authenticate using the version-verified shared header. The bridge stores and deduplicates the event, then fetches authoritative native state. A periodic reconciliation loop repairs missed notifications. Portal callbacks carry HMAC authentication, are durable/retried and deduplicated again in Portal. Completed status, final files and account activation remain separate facts.
+
+Original/completed PDF, native certificate and audit downloads are authorized per task and proxied as upstream bytes. There is no new custom PDF finalizer. Final cryptographic/completion acceptance remains a release gate until recorded in the QA report.
+
+## Onboarding business state
+
+Portal independently tracks contract requirements, payment facts, team terms, account access and unfinished tasks. Online eligible payment automatically activates; a matched offline payment requires the dedicated approval command. Actual receipts may be recorded before signature and stay unmatched when fee applicability is not established.
+
+A paper/historical PDF is staged, read and hashed server-side, then copied to a new server-only key. Verification is a separate auditable action; replacing a verified file creates a new version. Existing-staff recognition records identity/terms and financial applicability. Limited access records allow only selected profile/training/resources capabilities, with deadline/revocation enforced from fresh database state. These actions do not fake payment or electronic signatures.
+
+The queue includes active accounts with unfinished company countersignature, contract correction, receipt reconciliation or limited-access tasks. Deferral/restoration changes handling disposition, not contract/receipt facts.
+
+## Deployment separation
+
+New Documenso and bridge share a private PostgreSQL server but use separate databases and restricted runtime logins. Neither runtime can connect to the other's database. Portal's existing database remains separate. SMTP uses a dedicated application scoped to the existing ACS mail resource; the independent Email Service is unchanged. The service integrity seal is self-signed, not an AATL or individual certificate.

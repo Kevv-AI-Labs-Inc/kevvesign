@@ -1,0 +1,121 @@
+# Azure deployment handoff
+
+The development environment is deployed in the `Azure subscription free` subscription under resource group `rg-kevvesign-dev`.
+
+- Public application: `https://esign.kevv.ai`
+- Web, API, jobs, storage, messaging, email, Key Vault, and registry: East US 2
+- Azure SQL: Central US because this subscription currently restricts SQL creation in East US and East US 2
+- Staff entry: delegated connector session; Homix is the first connector and ordinary users do not create an eSign login
+- Recipient entry: one-time signing link; no recipient account
+
+This is a development environment, not a legal or production release. Its custom application and email domains are configured, but it still needs a final retention policy, production network isolation, monitoring/alerts, backup/recovery review, and NY/NJ/CA counsel/broker acceptance before real transactions or employee records are used.
+
+## Deployed resources
+
+- Container Apps: public Nginx/React Web and internal-only Fastify API with ClamAV sidecar
+- Container Apps Job: event-driven PDF finalizer using the `pdf-finalize` Service Bus queue
+- Azure SQL Database: Entra-only authentication, ledger audit table, separate API and finalizer managed identities
+- Storage: OAuth-only access, no public blobs, versioning/change feed, and delete retention
+- Key Vault: RBAC, purge protection, RSA manifest signing key, application secrets
+- Azure Container Registry: Basic, local admin disabled, managed-identity image pulls
+- Azure Communication Services Email: verified `esign.kevv.ai` sender domain with delivery/status diagnostics
+- Documenso dev: pinned `documenso/documenso:v2.11.0` container with a dedicated managed identity
+- Documenso PostgreSQL: `pg-kevvesign-documenso-dev` in Central US, version 16, seven-day dev backups
+- Log Analytics and Application Insights
+
+Current image references are recorded in `infra/parameters.dev.json`. The Bicep template remains the source of truth for resource configuration; deployment-only credentials remain in Key Vault and are never stored in a parameters file.
+
+`infra/parameters.prod.example.json` is a deliberately non-deployable production
+handoff with placeholders. Use it with
+[`HOMIX_ONBOARDING_RELEASE.md`](HOMIX_ONBOARDING_RELEASE.md) when preparing the
+separate production environment; never promote the development resource group or
+its smoke credential into production.
+
+## Repeatable deployment
+
+Run validation before changing Azure:
+
+```bash
+pnpm verify
+az bicep build --file infra/main.bicep --stdout >/dev/null
+az deployment group validate \
+  --resource-group rg-kevvesign-dev \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.dev.json \
+  --parameters bootstrapSessionSecret="$KEVVESIGN_SESSION_SECRET"
+```
+
+For an existing environment, load the current session secret without printing it, run `what-if`, then deploy:
+
+```bash
+KEVVESIGN_SESSION_SECRET=$(az keyvault secret show \
+  --vault-name kv-kevvesign-dev-lxgas2 \
+  --name session-secret \
+  --query value \
+  --output tsv)
+
+az deployment group what-if \
+  --resource-group rg-kevvesign-dev \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.dev.json \
+  --parameters bootstrapSessionSecret="$KEVVESIGN_SESSION_SECRET"
+
+az deployment group create \
+  --name kevvesign-dev-release \
+  --resource-group rg-kevvesign-dev \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.dev.json \
+  --parameters bootstrapSessionSecret="$KEVVESIGN_SESSION_SECRET"
+
+unset KEVVESIGN_SESSION_SECRET
+```
+
+For a first deployment, generate a cryptographically random value instead and immediately store it in the environment's Key Vault. Never place it in source control, parameters JSON, shell history, CI output, or browser code.
+
+## SQL bootstrap
+
+`pnpm --filter @esign/infrastructure bootstrap:azure-sql` installs the schema, reapplies the idempotent least-privilege grants, reconciles managed-identity users by client ID, seeds the workspace administrator, and optionally seeds the first integration client. Run it with a short-lived Azure SQL access token and a temporary firewall rule limited to the operator's exact IP; remove that rule immediately afterward.
+
+The API and finalizer use `DefaultAzureCredential` through the `azure-active-directory-default` driver mode. Their contained database users belong only to `esign_app_role`. The role can read/write application state and append audit events, but cannot delete ledger audit rows or control the schema.
+
+## Connector and identity cutover
+
+The Azure smoke credential is stored only in `kv-kevvesign-dev-lxgas2` as `portal-smoke-client-credential`. It is for deployment verification, not Homix Portal production use.
+
+For Homix Portal or another connected application:
+
+1. Register the exact Homix Portal HTTPS return URL.
+2. Issue two dedicated environment-specific application credentials when both workflows are needed: one restricted to `HR`, and one restricted to `REAL_ESTATE`, each with only its required scopes. Never reuse one credential across domains.
+3. Store it in the Homix Portal backend secret store; never send it to browser JavaScript.
+4. Have the connector backend call `POST /v1/integration-sessions`, then redirect the staff browser to the returned fragment-based `launchUrl`.
+5. Verify rotation and revocation, then revoke the deployment smoke client.
+
+Configure standalone access with either the paired legacy Entra parameters or `oidcProvidersJson`. Each JSON entry supplies a unique `id`, exact `issuer`, `audience`, and HTTPS `jwksUrl`; authentication is mapped to an active workspace member by email. For Google Workspace, set `emailVerifiedClaim` to `email_verified` so unverified email claims are rejected.
+
+## Documenso cutover
+
+The Documenso dev service is deployed independently from the Kevv eSign API. Its repeatable definition is `infra/documenso.bicep`; all credentials, encryption keys, and the development signing certificate are Key Vault references resolved through `id-documenso-kevvesign-dev`. Its public URL is `https://documenso.kevv.ai`. Public account creation is disabled after the two bootstrap accounts are created. No email-domain allowlist is baked into the deployment, so a future intentionally reopened registration flow is not tied to `homixny.com`. Google/Microsoft/OIDC sign-in is disabled for this initial bootstrap, and anonymous telemetry is disabled.
+
+Documenso migrations require the PostgreSQL extensions `pgcrypto` and `pg_trgm`. The Bicep definition allow-lists both extensions before starting the container and runs the upstream `start.sh` under a fail-fast shell. A migration failure must therefore keep the app unhealthy instead of allowing a schema-incompatible server to accept traffic.
+
+Keep the workspace unmapped so it uses the native engine until a Documenso administrator has created an API token and registered the Kevv eSign webhook. For the cutover, configure a stable `signingProviderConnectionId` plus `documensoBaseUrl`, `documensoApiToken`, and a separately generated `documensoWebhookSecret`; Bicep places the two secrets only in Key Vault and exposes them to the API through managed-identity secret references. Deploying Documenso alone does not route Homix traffic to it—the workspace mapping must be changed explicitly. Register `/v1/signing-engine/webhooks/documenso/{connectionId}` and the shared header in Documenso, then test create, distribute, resend, reject, cancel, multi-recipient routing, completion download, replay, and provider-outage recovery with synthetic PDFs before real records are allowed.
+
+The first external send freezes the connection ID on the envelope. To change Documenso accounts, create a new connection ID and map the workspace to it for new sends; do not reuse an existing ID with different account credentials, and retain the old connection while any frozen envelope may need webhook, resend, void, or evidence retrieval. Never place a Documenso token or webhook secret in application state, parameters JSON, shell history, CI output, or browser code.
+
+The bound hostnames are `esign.kevv.ai` for Kevv eSign and `documenso.kevv.ai` for Documenso. `documenso.kevv.ai` remains a DNS-only CNAME to its Container App hostname. `esign.kevv.ai` is a DNS-only A record to the Container Apps environment static IP so the same DNS name can also carry Azure Communication Services domain-verification and SPF TXT records. TXT records named `asuid.esign` and `asuid.documenso` contain the Container Apps environment custom-domain verification ID. Keep these records in place while the custom domains are active.
+
+Azure Communication Services Email uses the verified customer-managed domain `esign.kevv.ai`. Its sender username is `Kevv eSign <esign@esign.kevv.ai>`. Keep the domain-verification TXT record, SPF TXT record, and both Azure DKIM CNAME records published in Cloudflare. The Documenso organisation default Reply-To is `support@kevv.ai` for recipient-facing document emails. Documenso v2.11 does not attach a configurable Reply-To header to internal account emails such as signup confirmation and password reset; those emails still use the branded From address.
+
+## Release checks completed
+
+- Public `/health`: 200
+- Static application root: 200
+- Unauthenticated `/v1/me`: 401
+- Integration launch/exchange/session/dashboard: 201/200/200/200
+- One-time launch ticket replay: 410
+- Integration logout and post-logout access: 200/401
+- API and ClamAV containers: ready with zero restarts after final rollout
+- Documenso public and internal `/api/health`: 200 with database and certificate checks both `ok`
+- SQL temporary operator firewall rule: removed
+
+The synthetic integration session was logged out after verification. No licensed real-estate form, customer document, recipient email, or employee record was used. Documenso is deployed as a standalone dev service, while Kevv eSign remains in native signing-engine mode until API/webhook configuration and an end-to-end synthetic signing test are complete.

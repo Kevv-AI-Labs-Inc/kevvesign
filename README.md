@@ -1,85 +1,35 @@
-# Internal E-Sign Platform
+# Kevv eSign · Documenso integration for Portal
 
-Composable e-signature infrastructure for licensed NY, NJ, and CA real-estate forms and ordinary HR onboarding packets.
+Documenso is the sole signing engine for the new integration. `apps/bridge` provides the business API used by Homix Portal for agent onboarding, buyer/seller packages and custom documents. Documenso supplies its own editor, signer interface, delivery, completion and audit records. Portal owns onboarding business decisions, paper/historical contract verification, payments and access.
 
-Homix Portal is the first connected application, not a hard-coded dependency. Any trusted backend can use a scoped application credential and one-time browser handoff; standalone staff access accepts a configurable set of OIDC providers such as Google Workspace or Entra. External recipients sign from one secure email link without an account.
+**Release status (2026-09-12):** the new production Documenso and bridge are deployed, both company identities and 11 approved HR packages are configured, and the Portal candidate is built. Final synthetic signing/sealed-file acceptance and domain cutover are outstanding. The old production endpoints and native source remain until that acceptance passes; they are not a fallback in the new bridge.
 
-The default signing engine remains available for development. Production can select the Documenso Envelope API adapter for the high-risk signing ceremony, routing, delivery, PDF sealing, and recipient UX while Kevv eSign retains business integrations, licensed-template governance, transaction mapping, and evidence projections. The boundary is provider-neutral so a future engine can replace Documenso without changing calling applications.
+## Start here
 
-## Local development
+- [Product and acceptance plan](docs/DOCUMENSO_PORTAL_PLAN.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Production setup and cutover](docs/DEPLOYMENT.md)
+- [Signing operations](docs/SIGNING_OPERATIONS.md)
+- [Release evidence and remaining gates](docs/qa/2026-09-12-documenso-integration.md)
 
-```bash
-cp .env.example .env
-pnpm install
-pnpm dev
+## Development
+
+Use Node 22 and pnpm 10.4.1. Configure a **separate test** Documenso 2.18.0 instance and PostgreSQL database. Copy `apps/bridge/.env.example` into an ignored local environment file, supply generated local secrets and start the bridge with the environment loaded:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @esign/bridge dev
+pnpm --filter @esign/bridge typecheck
+pnpm exec vitest run apps/bridge/src/__tests__/contract.test.ts
+pnpm --filter @esign/bridge build
 ```
 
-- eSign administration and delegated editor: `http://localhost:5173`
-- API: `http://localhost:4100`
-- OpenAPI: `http://localhost:4100/docs/openapi.json`
+The bridge listens on port 4100. `/health/live` identifies the engine/version; `/health/ready` checks its database and reconciliation loop. Backend callers authenticate with a bearer API key and a canonical Portal actor assertion; credentials never belong in browser code.
 
-Development mode uses a synthetic administrator, local private-file storage, a local email outbox, and no production forms or personal information. Azure deployment uses managed services. Delegated handoffs do not depend on the standalone administrator identity provider.
+A customer editor needs a real Documenso user and its own isolated connection. Signer recipients use the exact document recipient URL and need no Portal account. There is no forged SSO cookie or shared HR credential for agents. Native login may be required before editing; Portal keeps the original task open and refreshes when the user returns.
 
-## Connect Homix Portal or another project
+The company publishes actual approved legal PDFs and roles. The buyer/seller package capability is implemented; no synthetic or invented legal package is published for real customers.
 
-In **Workspace → Application credentials**, choose a stable connector key, select exactly one business domain (`HR` or `REAL_ESTATE`), register exact HTTPS return URLs, and issue a workspace-scoped credential. Use separate credentials for separate business domains; an HR credential cannot read or mutate real-estate templates, transactions, envelopes, or evidence, and the reverse is also true. The plaintext credential is shown once; only its SHA-256 hash is stored. Keep it in the source project's backend secret store—never in browser JavaScript.
+## License
 
-```bash
-curl http://localhost:4100/v1/templates \
-  --header "X-ESign-Key: $ESIGN_APPLICATION_KEY"
-```
-
-For a workflow that needs the eSign PDF editor, the connected backend creates a one-time handoff:
-
-```bash
-curl http://localhost:4100/v1/integration-sessions \
-  --header "Content-Type: application/json" \
-  --header "X-ESign-Key: $ESIGN_APPLICATION_KEY" \
-  --data '{
-    "actor": {
-      "subject": "homix:user-42",
-      "email": "agent@homixliving.com",
-      "displayName": "Homix Agent",
-      "role": "preparer"
-    },
-    "intent": { "kind": "prepare-envelope" },
-    "returnUrl": "https://portal.homixliving.com/esign/return"
-  }'
-```
-
-Redirect the employee's browser to the returned `launchUrl`. The five-minute ticket is one-time, is carried in a URL fragment so it is not sent in request logs, and is exchanged for a one-hour HttpOnly session with CSRF protection. The user can return to the registered source URL from the persistent sidebar action.
-
-Scopes are `templates:read`, `templates:write`, `transactions:read`, `transactions:write`, `envelopes:read`, `envelopes:write`, `envelopes:send`, `evidence:read`, and `integration-sessions:create`. Delegated users are constrained by their asserted role, the application's scopes, and its single business domain. Credentials can be rotated or revoked; revocation invalidates associated sessions immediately. Envelope creation and send requests require an `Idempotency-Key` header. The old `/v1/portal-sessions` contract remains as a deprecated compatibility alias.
-
-## Select a signing engine
-
-Signing providers are selected through a workspace mapping, not by a calling application's name. `Workspace.signingProviderConnectionId` identifies a configured provider connection; a workspace without a mapping uses the native engine. The first external send copies the selected connection ID onto the envelope, so later resend, void, webhook, and evidence operations continue through the same connection even if the workspace mapping changes. Deploying the Homix Documenso instance does not automatically route a workspace to it.
-
-Each connection has a stable `SIGNING_PROVIDER_CONNECTION_ID`. Documenso connections additionally require `DOCUMENSO_BASE_URL`, `DOCUMENSO_API_TOKEN`, and a random `DOCUMENSO_WEBHOOK_SECRET` of at least 32 characters. In Azure, the API token and webhook secret must exist only in Key Vault and reach the API through managed-identity secret references. Configure Documenso to POST events to `/v1/signing-engine/webhooks/documenso/{connectionId}` with that connection's secret in `X-Documenso-Secret`; the unparameterized route remains only as a single-connection compatibility alias. To move to a different Documenso account, create a new connection ID and remap the workspace for new envelopes; keep the old connection available for already-sent envelopes.
-
-The adapter uses Documenso API v2 envelope endpoints. It creates multi-PDF envelopes, maps normalized drag/drop fields, distributes and redistributes requests, correlates provider recipients, ingests authenticated replay-safe events, downloads completed sealed PDFs, and preserves their exact bytes in the evidence package. Unsupported attachment fields fail before sending instead of being silently dropped.
-
-The local release supports REST polling for source-project integration. Webhook HMAC and SSRF-defense primitives are included, while subscription delivery, retry, and dead-letter validation remain part of the Azure staging phase.
-
-## Verification
-
-```bash
-pnpm verify
-pnpm test:e2e
-```
-
-See [PLAN.md](PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
-
-## License and source
-
-Copyright 2026 Kevv AI Labs Inc. Kevv eSign is released under [AGPL-3.0-or-later](LICENSE). A running modified network service must offer its corresponding source as required by section 13. The application links back to this source repository; third-party acknowledgements are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-### Delegated real-estate ownership and native completion
-
-REAL_ESTATE integration/legacy Portal sessions can access only envelopes and transactions created by their own stable `applicationClientId + actor.subject`. New resources receive `delegatedOwner` on creation; clients cannot choose or change it in a request. Ownership applies to lists, dashboard counts, details, evidence downloads, sending/resending/voiding, transaction association, deep links, and creation idempotency. Existing unowned real-estate resources are hidden from delegated sessions. Direct staff and trusted backend application credentials retain their existing workspace/domain permissions; HR onboarding behavior is unchanged. Do not expose backend credentials in agent browsers.
-
-This is private envelope/transaction access, not a team-sharing or private-template feature. Templates remain a shared workspace library. Customer-specific uploads, explicit sharing, and recipient delivery of completed copies still require product integration before general agent rollout.
-
-Native signatures require explicit adoption intent and a nonblank typed name or visible PNG mark. PNG decoding is bounded before inflation. Signed-date fields accept real `YYYY-MM-DD` calendar dates; the UI supplies the signer's local date. Completed PDFs embed actual drawn marks and a bundled Noto CJK font subset, including certificate text. Both API and PDF finalizer images include the font and its license. See `packages/infrastructure/assets/README.md` for provenance and the tested font encoder bridge.
-
-Regression checks: `pnpm verify` and `pnpm exec playwright test --workers=1`. `tests/e2e/signing.spec.ts` covers two recipients, two PDFs, consent, blank/cleared drawings, save/reload, Chinese names, sequential activation, evidence verification, and signed PDF downloads on all configured browser profiles. These local native-engine checks do not certify production Documenso, email delivery, real payments, physical-device input, or load behavior.
+Copyright 2026 Kevv AI Labs Inc. [AGPL-3.0-or-later](LICENSE). Keep the corresponding-source offer and [third-party notices](THIRD_PARTY_NOTICES.md) with network distributions. The official Documenso image is pinned by digest; the bridge does not fork its signature ceremony.
