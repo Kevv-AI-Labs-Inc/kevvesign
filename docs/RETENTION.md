@@ -1,15 +1,7 @@
-# Retention matrix
+# Data preservation and retention scope
 
-These defaults are implementation settings, not legal advice. Named broker/counsel and HR policy owners must approve production activation.
+This integration retains existing business SQL records and historical file storage. Retiring the custom signing runtime does not delete those records. New electronic originals, signed files and audit records are owned by Documenso; Portal keeps independent paper verification and business facts.
 
-| Record class                                     |                                    Default | Immutable                        | Delivery                               |
-| ------------------------------------------------ | -----------------------------------------: | -------------------------------- | -------------------------------------- |
-| NY/NJ/CA completed real-estate package           |                                    7 years | Yes, after verification          | Secure link; attachment policy pending |
-| Ordinary offer letter/NDA/policy acknowledgement |    3 years after relevant employment event | Yes, per approved document class | Secure link                            |
-| Unsent draft                                     |                   30 days after inactivity | No                               | Not delivered                          |
-| Recipient session                                |          24 hours maximum; normally 1 hour | No                               | Never exported as credential           |
-| Idempotency record                               |                           24 hours minimum | No                               | Internal only                          |
-| Operational log                                  | 30 days non-production; 90 days production | No                               | Internal operators                     |
-| Audit/evidence package                           |  Same as protected document or longer hold | Yes                              | Authorized audit/export                |
+No new automatic document deletion or legal-hold engine was implemented in this integration. The old native retention matrix is [historical documentation](archive/native-platform-2026-09-12/RETENTION.md), not an assertion that Documenso enforces those periods or WORM controls.
 
-Legal hold is additive: releasing a hold never shortens an active time-based retention policy.
+The current PostgreSQL service has a 14-day backup window. That is backup configuration, not a contract retention policy. Document retention, export/restore and organizational hold requirements must be configured and operated explicitly if adopted. See [deployment](DEPLOYMENT.md) for retained resources and [operations](SIGNING_OPERATIONS.md) for protected file access.

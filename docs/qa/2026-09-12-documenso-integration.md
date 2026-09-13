@@ -1,6 +1,6 @@
 # Documenso integration acceptance · 2026-09-12
 
-Status: **implementation and candidate deployment in progress; not a completed public release**.
+Status (2026-09-13): **native signing acceptance complete; canonical eSign domain serves Documenso. Final Portal deployment and old API/finalizer shutdown remain pending.**
 
 ## Verified
 
@@ -14,7 +14,7 @@ Status: **implementation and candidate deployment in progress; not a completed p
 | Delivery and callback      | Real local native distribution/webhooks, durable inbox, authenticated bridge→Portal callback, retry after failure; Mailpit captures only synthetic recipients                                                                           |
 | HR package import          | 11 approved blank onboarding/Team Leader packages imported in local and production native instances; PDF hashes, explicit metadata, role/page/geometry mapping and restart checkpoints verified                                         |
 | HR send controls           | Unit checks plus real native draft-shape validation; controlled HR fields, recipients, routing and original hashes checked before bridge send                                                                                           |
-| eSign full verification    | `pnpm verify` passed: formatting, ESLint, all workspace typechecks, 60 tests / 13 test files, coverage and full workspace builds; bridge tests included, native legacy coverage is not evidence of final Documenso completion           |
+| eSign full verification    | After native source retirement, `pnpm verify` passed with 12 bridge boundary tests, formatting, lint, typechecks and build; the separate real-native API/DB regression passed. Previous 60-test results included the retired engine     |
 | Portal regressions         | Complete npm test run against isolated PostgreSQL, build and typecheck pass; admin DB tests cover concurrent receipts, no early settlement, paper/historical requirements, scoped access, expiry/revocation and activation independence |
 | Browser paper flow         | Real local S3-compatible upload, pending verification, missing-identity 409, accepted paper record with company signature still outstanding and account pending                                                                         |
 | HR file authorization      | Actual uploaded PDF/download SHA-256 equal; unrelated agent receives 404; manual verification does not write an electronic signed state                                                                                                 |
@@ -26,23 +26,21 @@ Status: **implementation and candidate deployment in progress; not a completed p
 | Portal candidate           | Vercel `--prod --skip-domain` candidate built Ready; signing API protected by login; canonical domains not promoted                                                                                                                     |
 | Portal migration           | Additive migration applied to Supabase homix; five new tables RLS-enabled and no anon/authenticated grants                                                                                                                              |
 
-Latest deployed bridge digest: `sha256:b17f6f0a77eb8e880d1052e6ba5f51ff05a0e9060b716f769557aefb0fb28905`.
+Latest deployed bridge digest: `sha256:8350858e5f3b01b935a6abbb53082a1304b87014f707deb0145e4d80bfda8494`.
 
 The local browser uses disposable `example.invalid` accounts, isolated PostgreSQL, Mailpit and local S3-compatible storage. No real employee was activated, no real payment executed and no company/person signature applied as QA. Production setup created approved blank templates and configuration, not new real employee signing requests.
 
-## Still required
+## Remaining release work
 
-1. The final synthetic **Sign** confirmation previously requested from the user is still pending. Do not treat selecting a signature mark, opening a signer UI or distributing a document as completed signing.
-2. Finish actual multi-recipient completion; verify native completed status, sealed PDF integrity, native certificate/audit and byte-preserving downloads through both services. Record native completion and Portal callback separately.
-3. Complete remaining native onboarding/custom acceptance, final build and protected candidate smoke after the last local fixes.
-4. Bind the canonical eSign domain and promote the final Portal candidate. Verify links and native sign-in after the domain change.
-5. Retire the replaced native code/runtime/defaults and record the stopped resources, preserving original business data/storage.
-6. Before enabling actual buyer/seller packages, obtain the company's approved files/roles and publish validated versions. The capability exists; legal content is not invented.
-7. Customer editor accounts require per-agent native identity/team setup and a verified connection. HR is configured; ordinary agent connections have not been mass-created.
+1. Upload and promote the final Portal source (production build passed). Automatic approval review requires explicit permission to upload this specific source payload to the existing Vercel project; that question remains pending. The previously Ready candidate has not been promoted.
+2. After Portal cutover, stop the old API revision, disable the old finalizer Event trigger and remove obsolete Portal native environment pins. Preserve business SQL, historical files/storage and the independent Email Service.
+3. Company-approved buyer/seller files and roles are required before publishing real legal packages; per-agent native editor identities/connections must be set up before those users edit customer contracts.
 
-The service P12 is a self-signed integrity seal, not an AATL/personal certificate. Final sealing remains unverified until real synthetic completion. Existing Supabase security-advisor warnings predate this change (mutable search paths and an unrelated RLS helper executable by public app roles); the new tables' no-policy INFO is intentional server-only access.
+The service P12 is a self-signed integrity seal, not an AATL/personal certificate. Actual native sealing and CMS verification passed on synthetic files. Existing unrelated Supabase advisor warnings are outside this change.
 
-## Final source checkpoint
+The following checkpoints are historical; current results and outstanding gates are recorded above and in `2026-09-12-production-candidate.json`.
+
+## Historical candidate checkpoint
 
 Portal source commits `6058df3` and `950cf19`; eSign bridge source commit `8d1c82d`. Latest local Portal production build and targeted storage/pending-session regressions passed. ESLint has zero errors and one pre-existing generated workflow warning. Per-agent real-session training authorization and same-JWT revocation both passed.
 
@@ -50,7 +48,7 @@ Final Portal candidate `dpl_5ECwL4pswEqL4UN7BRnSoZBi9q6b` / `https://homixliving
 
 Candidate smoke found and fixed a middleware issue: the exact POST `/api/signing/events` must reach its HMAC handler without a browser session. All other signing routes remain protected. Regression tests verify the method/path boundary. Full local HTTP verifies unsigned callback 401, authenticated malformed payload 400, real native HR-state refresh, durable inbox and safe replay. The new production candidate containing this fix is Ready. Its real HTTP authentication test passes: missing signature 401 / INVALID_EVENT_SIGNATURE; correct production HMAC with malformed empty event 400 / INVALID_REQUEST. No production inbox/business row is created by that test. Bridge package API without credentials returns 401. Canonical domains remain unchanged.
 
-## Custom document and developer-entry follow-up
+## Historical preparation checkpoint
 
 - Portal commit `242d387` removes the silent Homix Realty default for custom documents. The form requires an explicit company; selecting Homix Living was verified in the UI.
 - Real local HTTP exercised custom upload through Portal, private local S3, bridge and Documenso. Request `1ec92d21-1647-49e2-afcd-da73a673e4aa` maps to native `envelope_zwsdnknzzkdokzrb`, retains Homix Living in its business snapshot, deduplicates retry, and returns the original PDF bytes and exact owner's editor URL.
@@ -58,14 +56,20 @@ Candidate smoke found and fixed a middleware issue: the exact POST `/api/signing
 - eSign commit `0ab670e` changes `pnpm dev` and the root environment example to bridge defaults, retaining explicitly named legacy commands only until the retirement gate. CI compiles all seven old/new Bicep entry points. Frozen offline dependency resolution and the matching Bicep/format checks passed.
 - The latest Portal candidate is Ready. Final native signature/seal acceptance, canonical cutover and removal of old native code/runtime remain outstanding pending the previously requested final-sign confirmation.
 
-## 2026-09-13 native completion and retirement acceptance
+## 2026-09-13 final native signing acceptance
 
-User confirmation received. Real native final signing completed for the two-person/two-PDF buyer fixture, custom Homix Living upload and applicant-then-company onboarding fixture. These were synthetic localhost documents, not company contracts. Native COMPLETED and signed timestamps, original/signed PDF downloads, certificate and audit were verified. OpenSSL CMS verification and full-file ByteRange coverage passed. Bridge bytes equal native bytes; the actual Portal custom signed download also matches.
+The user confirmed final synthetic signing. Three actual workflows completed in official Documenso 2.18.0: two recipients signing two buyer fixture PDFs; a custom Homix Living upload prepared in the native editor; and an onboarding applicant followed by a separate synthetic company signer. No real company/person contract or payment was executed.
 
-The real onboarding native events passed through durable bridge inbox/outbox and the actual Portal HMAC callback. Applicant signing populated only the applicant milestone; company signing then populated company and final completion. The unpaid account stayed pending. The custom signer returned to the exact Portal task displaying completed files, certificate and audit. Evidence is in Portal `docs/qa/2026-09-12-signing-integration/evidence/2026-09-13-native-completion/`.
+The native `COMPLETED` state, signed timestamps, native certificate and audit downloads were verified. Signed files from Documenso and the bridge were identical; the custom signed file downloaded through Portal was also byte-identical. OpenSSL verified the CMS signature and full-file ByteRange coverage for both multi-file samples. See [synthetic completion evidence](../../../homixliving/docs/qa/2026-09-12-signing-integration/evidence/2026-09-13-native-completion/acceptance.json).
 
-Old custom API/UI, finalizer, workflows, contract/domain/infrastructure packages and their exclusive tests/dependencies were removed. Original source is recoverable from Git `28fa3f2` and a protected local archive (SHA-256 `bedc78bd67f8134243223be90225f42318af52d630a1536a21e8392b61e1bcd7`); business data/storage was not deleted. Old IaC lives in the historical documentation directory.
+The real native onboarding recipient/completion events passed through the durable bridge inbox/outbox and actual Portal HMAC endpoint. After applicant signing, Portal recorded the applicant timestamp and kept company signature absent. After company signing, both signatures and completion time were populated. The unpaid synthetic account remained pending throughout. Native custom signing redirected to the exact Portal task, visibly showing completed status and signed file/certificate/audit links.
 
-After retirement, full `pnpm verify` passed. Twelve bridge boundary tests pass with 85.41% lines / 82.32% branches / 77.5% functions on identity, wire-contract, package and recipient-action modules. This is explicitly unit-boundary coverage; SQL/orchestration is verified by the separate real Documenso integration test, which also passed after old dependencies were removed. The previous 60-test count included retired native implementation tests and is not the current product test count.
+The original low-level buyer fixture redirected to an unused localhost:3000 harness after signing; the actual Portal custom flow correctly returned to localhost:3119. Production return origins are explicit trusted client configuration, not browser parameters.
 
-Public `esign.kevv.ai` now serves official Documenso through the existing domain/TLS entry point repurposed as a certificate-validating Nginx proxy. Both production company connections and all 11 HR templates are readable through the canonical path. New bridge and gateway images are built and deployed; no production signing request or email was created for this read-only smoke. Final Portal promotion and old API/finalizer shutdown remain pending until recorded below.
+Old Portal native client, publisher/verifier and unused native policy code were removed. Approved contract files and the Documenso package/geometry export remain. Production domain cutover and old runtime shutdown are being finalized; final release state is recorded in `2026-09-12-production-candidate.json`.
+
+## 2026-09-13 canonical eSign verification
+
+The official engine is live at `https://esign.kevv.ai` through a small Nginx gateway preserving the existing TLS binding. Gateway and bridge use pinned images; all 11 HR templates and both company identities were verified through the canonical path. See `evidence/2026-09-13-native-completion/canonical-native-proof.json`. No real request or email was created. Source retirement is committed in eSign `4800b44` and Portal `8902c23`; only the old API/finalizer runtime stop and Portal final release remain coordinated work.
+
+Portal final source `586d621` passes the full Webpack production build, TypeScript, 120 static pages and targeted lint. The necessary rental-page component extraction preserves its form implementation unchanged. Final upload/promotion remains pending the requested specific Vercel payload authorization.

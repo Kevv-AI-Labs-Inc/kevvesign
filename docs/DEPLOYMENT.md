@@ -1,8 +1,8 @@
 # Documenso integration deployment
 
-Last verified: 2026-09-12 (America/New_York). This is the new deployment runbook. **Domain cutover and final synthetic signing acceptance are not yet complete.** Do not describe the candidate as the public production release until the final gates below are recorded.
+Last verified: 2026-09-13 UTC. **Real native signing acceptance and canonical eSign cutover are complete. Final Portal promotion and old API/finalizer runtime shutdown remain pending.**
 
-## Current production candidates
+## Current production services
 
 Azure subscription `ba7a563d-3eaf-4ca6-8b22-c28a8d3b6b36`, resource group `rg-kevvesign-prod`, location `centralus`.
 
@@ -23,7 +23,7 @@ Bridge URL: `https://ca-esign-bridge-prod.victoriousbush-82cadf77.centralus.azur
 
 Pinned native image: `documenso/documenso@sha256:126976b9e3be54193e1a3be8d22130af1913aaa894c550b98870a2cc4c422650` (2.18.0, upstream commit `389390c884949fe27c240488a3259da3cdba93e0`).
 
-Current bridge image: `acrkevvesignprodcz3a2u4wwz27c.azurecr.io/esign/bridge@sha256:b17f6f0a77eb8e880d1052e6ba5f51ff05a0e9060b716f769557aefb0fb28905`; active revision `ca-esign-bridge-prod--0000001`, healthy.
+Current bridge image: `acrkevvesignprodcz3a2u4wwz27c.azurecr.io/esign/bridge@sha256:8350858e5f3b01b935a6abbb53082a1304b87014f707deb0145e4d80bfda8494`; active revision `ca-esign-bridge-prod--documenso-only-20260913`, healthy.
 
 The official image is unmodified. Bootstrap used a temporary image that calls the pinned upstream official account/organization/team/token helpers; the public native app uses the official digest above.
 
@@ -62,7 +62,7 @@ Documenso SMTP uses ACS resource `acs-kevvesign-prod-umwk4u3aag3g6`, username `d
 
 SMTP application credential expires **2027-09-13T01:22:32.419003Z**; rotate it ahead of expiry. Replace the Key Vault value and refresh the application revision; verify TLS/auth again without exposing the credential.
 
-The generated 4096-bit RSA P12 is a **self-signed service integrity seal**, valid for 730 days from issuance. It is not an AATL certificate, a qualified signature, or Si Zhang's personal signature. Back up its private material under restricted access. Final native sealing and certificate download need the real synthetic completion acceptance below; health checks do not prove signing.
+The generated 4096-bit RSA P12 is a **self-signed service integrity seal**, valid for 730 days from issuance. It is not an AATL certificate, a qualified signature, or Si Zhang's personal signature. Back up its private material under restricted access. Actual synthetic native signing, sealed PDF CMS/ByteRange verification and native certificate/audit downloads passed. Health checks alone are not used as signing evidence.
 
 ## Portal candidate and additive migration
 
@@ -72,10 +72,10 @@ Candidate: `https://homixliving-iwyama71e-erics-projects-9449aac9.vercel.app`, I
 
 ## Cutover checklist
 
-- [ ] Complete the explicitly requested synthetic final-sign confirmation, then verify two recipients, native completed state, exact PDF bytes, cryptographic integrity seal, certificate/audit and durable callback into Portal.
-- [ ] Complete the remaining onboarding and custom-document native acceptance; record what was tested separately from unit/DB coverage.
+- [x] User-authorized synthetic final signing: two recipients, native completed state, exact PDF bytes, cryptographic integrity seal, certificate/audit and durable callback into Portal verified.
+- [x] Sequential onboarding and custom-document native completion acceptance recorded separately from unit/DB coverage.
 - [ ] Rebuild final bridge/Portal source, check candidate health and protected routes, retain the old deployment IDs for rollback.
-- [ ] Bind `esign.kevv.ai` to the new Documenso app with a valid managed TLS certificate. Update native public URL and bridge `DOCUMENSO_BASE_URL` together; verify native links, login/reset and mail URLs.
+- [x] Serve official Documenso at `esign.kevv.ai` through the existing TLS binding and minimal gateway. Native public URL and bridge base URL use the canonical hostname; native login and template reads verified. No real password-reset email sent.
 - [ ] Promote the tested Portal deployment; verify `/pending`, `/signing`, `/admin/agents?view=onboarding`, `/admin/signing` and authenticated callbacks on canonical domains.
 - [ ] Run the approved production smoke with synthetic recipients only; do not send real invitations or execute real contracts/payments as a deployment test.
 - [ ] Stop the replaced native web/API/finalizer/workflows, remove their source, dependencies and obsolete Portal native environment pins. Preserve business records, historical files, SQL/storage and the independent Email Service.
@@ -94,3 +94,11 @@ Bridge image after dependency retirement: `sha256:8350858e5f3b01b935a6abbb53082a
 Use `apps/gateway/prepare-azure-update.py` with an `az containerapp show` snapshot, the pinned image, verified native hostname and unique revision suffix. It writes a private update file; review it before `az containerapp update --yaml`. Keep the private pre-cutover snapshot. The live gateway needs only registry pull access and no signing/API/database secret environment. Upstream host and canonical public host are explicit deployment values.
 
 The code retirement removed old applications/packages and archived old IaC without deleting historical SQL or file storage. The API/finalizer runtime stop and final Portal production promotion are tracked separately in the release record. No native fallback is included in any new artifact.
+
+## Coordinated legacy runtime stop
+
+After the tested Portal deployment is promoted, deactivate the active revision of `ca-api-kevvesign-prod` and change `job-pdf-kevvesign-prod` from Event to Manual. Preserve the job definition, old application resource, SQL, Service Bus and historical blob data. There are no Azure Function apps in this resource group. The former web app resource remains the current Nginx gateway and must stay running.
+
+A private snapshot and a prepared Manual-trigger update exist in the operator workspace; the update preserves identity, image, template and secret references. No API/finalizer stop is claimed until its actual resource state is verified. Retained historical SQL, storage, Service Bus, old environment/network infrastructure and gateway resources may continue to incur charges; no billing amount or automatic deletion is implied.
+
+Final Portal upload is pending explicit authorization requested after automatic approval review rejected the private source payload upload to the existing Vercel project. The existing Ready candidate has not been promoted as a workaround.

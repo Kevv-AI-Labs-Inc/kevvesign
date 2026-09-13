@@ -2,7 +2,7 @@
 
 日期：2026-09-12
 
-状态：实施中；bridge、Portal 接入和本机真实 Documenso 验证已有进展，生产切换与 native 退役尚未完成。
+状态：原生多文件双人、顺序入职和个性化文件最终签署、完成文件及真实回调验收通过；esign.kevv.ai 已服务官方 Documenso，自建签署源码已退役。Portal 最终部署及旧 API/finalizer 运行停止尚待协调完成。
 核对基线：eSign `1d3e1bd`，Portal `a02c539`。
 
 ## 1. 产品定义
@@ -348,3 +348,11 @@ eSign 全量 `pnpm verify` 通过 60 个测试和全部构建。手机端纸质�
 部署与运维说明已重写为实际 Documenso/bridge 架构，旧自建平台说明归档。详见 `docs/DEPLOYMENT.md`、`docs/SIGNING_OPERATIONS.md` 和 `docs/qa/2026-09-12-documenso-integration.md`。
 
 个性化文件补充验收：Homix Living 公司归属必选、Portal 上传至真实 Documenso、重复创建防重、原件字节、原生编辑刷新保存、发送至本地 Mailpit 及返回 Portal 同一待签任务均已验证，仍未点击最终 Sign。开发默认命令和环境示例已改为 bridge；CI 已加入所有新部署模板并通过编译。最新 Portal 候选 `dpl_5ECwL4pswEqL4UN7BRnSoZBi9q6b` 已 Ready，生产 HMAC 边界检查通过。
+
+## 2026-09-13 发布状态
+
+- 真实合成签署验收已完成；不再等待最终 Sign 确认。签署人为测试身份，未替 Si Zhang 或任何真实客户签约。
+- 自建签署代码、专用依赖及构建入口已移除；旧 IaC/runbook 标为历史，业务数据、合同原文和存储保留。
+- 正式 esign.kevv.ai 已通过原 TLS 入口提供 Documenso，两家公司与 11 个 HR 模板读验证通过。
+- Portal 最终部署因自动审批要求具体源码上传授权而暂停。此前候选仍为 Ready 且未提升；旧 API 与 Event finalizer 的停止已准备好，待 Portal 切换一起完成。
+- 当前证据和待办见 `docs/qa/2026-09-12-production-candidate.json`。
