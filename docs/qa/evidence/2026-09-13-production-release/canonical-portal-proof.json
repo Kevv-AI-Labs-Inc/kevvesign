@@ -1,0 +1,37 @@
+{
+  "canonicalUrl": "https://agents.homixny.com",
+  "routes": {
+    "/pending": {
+      "status": 307,
+      "redirect": "https://agents.homixny.com/login"
+    },
+    "/signing": {
+      "status": 307,
+      "redirect": "https://agents.homixny.com/login?callbackUrl=https%3A%2F%2Fagents.homixny.com%2Fsigning"
+    },
+    "/admin/agents?view=onboarding": {
+      "status": 307,
+      "redirect": "https://agents.homixny.com/login?view=onboarding&callbackUrl=https%3A%2F%2Fagents.homixny.com%2Fadmin%2Fagents%3Fview%3Donboarding"
+    },
+    "/admin/signing": {
+      "status": 307,
+      "redirect": "https://agents.homixny.com/login?callbackUrl=https%3A%2F%2Fagents.homixny.com%2Fadmin%2Fsigning"
+    },
+    "/api/signing/requests": {
+      "status": 307,
+      "redirect": "https://agents.homixny.com/login?callbackUrl=https%3A%2F%2Fagents.homixny.com%2Fapi%2Fsigning%2Frequests"
+    }
+  },
+  "callbacks": {
+    "unsigned": {
+      "status": 401,
+      "error": "INVALID_EVENT_SIGNATURE"
+    },
+    "authenticatedMalformed": {
+      "status": 400,
+      "error": "INVALID_REQUEST"
+    }
+  },
+  "businessMutations": 0,
+  "verifiedAt": "2026-09-13T05:32:01Z"
+}

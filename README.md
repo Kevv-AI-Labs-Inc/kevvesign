@@ -2,7 +2,7 @@
 
 Documenso is the sole signing engine for the new integration. `apps/bridge` provides the business API used by Homix Portal for agent onboarding, buyer/seller packages and custom documents. Documenso supplies its own editor, signer interface, delivery, completion and audit records. Portal owns onboarding business decisions, paper/historical contract verification, payments and access.
 
-**Release status (2026-09-13):** real multi-recipient, sequential onboarding and custom signing completed in the pinned native engine. Sealed PDFs, cryptographic integrity, certificate/audit, Portal return and durable HR callbacks passed. `esign.kevv.ai` now serves Documenso through the existing TLS entry point; 11 approved HR packages and both company identities are verified on that domain. The final Portal deployment and stopping the old API/finalizer are the remaining coordinated release steps.
+**Release status (2026-09-13):** real multi-recipient, sequential onboarding and custom signing completed in the pinned native engine. Sealed PDFs, cryptographic integrity, certificate/audit, Portal return and durable HR callbacks passed. `esign.kevv.ai` now serves Documenso through the existing TLS entry point; 11 approved HR packages and both company identities are verified on that domain. Both source PRs and main CI passed, and Portal is live through its existing Git deployment. The old API has zero replicas, the old finalizer automatic trigger is disabled, and 50 obsolete Portal settings are removed. Historical records remain preserved.
 
 ## Start here
 
@@ -10,7 +10,7 @@ Documenso is the sole signing engine for the new integration. `apps/bridge` prov
 - [Architecture](docs/ARCHITECTURE.md)
 - [Production setup and cutover](docs/DEPLOYMENT.md)
 - [Signing operations](docs/SIGNING_OPERATIONS.md)
-- [Release evidence and remaining gates](docs/qa/2026-09-12-documenso-integration.md)
+- [Release and retirement evidence](docs/qa/2026-09-12-documenso-integration.md)
 
 ## Development
 

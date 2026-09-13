@@ -1,0 +1,53 @@
+{
+  "verifiedAt": "2026-09-13T05:35:03.626471+00:00",
+  "legacyApi": {
+    "resource": "ca-api-kevvesign-prod",
+    "revision": "ca-api-kevvesign-prod--recovery-1d3e1bd",
+    "active": false,
+    "replicas": 0
+  },
+  "legacyFinalizer": {
+    "resource": "job-pdf-kevvesign-prod",
+    "provisioningState": "Succeeded",
+    "triggerType": "Manual",
+    "runningExecutions": 0
+  },
+  "azureFunctionApps": 0,
+  "currentRuntime": [
+    {
+      "resource": "ca-documenso-kevvesign-prod",
+      "state": "Running",
+      "revision": "ca-documenso-kevvesign-prod--canonical-20260913",
+      "image": "documenso/documenso@sha256:126976b9e3be54193e1a3be8d22130af1913aaa894c550b98870a2cc4c422650"
+    },
+    {
+      "resource": "ca-esign-bridge-prod",
+      "state": "Running",
+      "revision": "ca-esign-bridge-prod--documenso-only-20260913",
+      "image": "esign/bridge@sha256:8350858e5f3b01b935a6abbb53082a1304b87014f707deb0145e4d80bfda8494"
+    },
+    {
+      "resource": "ca-web-kevvesign-prod",
+      "state": "Running",
+      "revision": "ca-web-kevvesign-prod--documenso-gw-20260913",
+      "image": "esign/gateway@sha256:bfec08cf750ee3c71375952537afcc10db7c9ac0dfb8b583b6624865f1bb7224"
+    }
+  ],
+  "portalEnvironment": {
+    "scope": "Vercel production project configuration",
+    "obsoleteSettingsRemoved": 50,
+    "retainedSigningSettingNames": [
+      "ESIGN_BRIDGE_BASE_URL",
+      "ESIGN_BRIDGE_API_KEY",
+      "ESIGN_PORTAL_CALLBACK_SECRET"
+    ],
+    "secretValuesIncluded": false
+  },
+  "preserved": [
+    "historical business SQL",
+    "original and signed contract files/storage",
+    "legacy Service Bus and resource definitions",
+    "independent Email Service"
+  ],
+  "billing": "Legacy API replicas and event-driven finalizer execution stopped; retained resources can continue to incur charges. No cost amount or resource deletion is claimed."
+}
