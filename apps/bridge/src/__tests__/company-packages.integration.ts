@@ -362,12 +362,27 @@ try {
       !JSON.stringify(request).includes(native.recipients[0].token),
       'Status never contains recipient tokens',
     );
+    // A native create can succeed before the first projection sync fails.
+    // Recovering that draft must still require review before any invitation.
+    await store.query('UPDATE signing.request_parts SET projection=NULL WHERE request_id=$1', [
+      request.id,
+    ]);
     await assert.rejects(service.command(agent, request.id, 'send'), denied('REVIEW_REQUIRED'));
+    assert.equal((await provider.get(native.id)).status, 'DRAFT');
     const review = await service.review(agent, request.id);
     assert.equal(review.files.length, 2);
     assert(review.files[0].fields.some((f) => f.value === input.values.property_address));
     assert(!JSON.stringify(review).includes('token'));
     await assert.rejects(service.review(other, request.id), denied('NOT_FOUND'));
+    await store.query(
+      "UPDATE signing.request_parts SET projection=jsonb_set(projection,'{status}','\"PENDING\"') WHERE request_id=$1",
+      [request.id],
+    );
+    await assert.rejects(
+      service.command(agent, request.id, 'send', undefined, undefined, '0'.repeat(64)),
+      denied('REVIEW_REQUIRED'),
+    );
+    assert.equal((await provider.get(native.id)).status, 'DRAFT');
     await service.command(agent, request.id, 'send', undefined, undefined, review.reviewHash);
     const sent = await provider.get(native.id);
     assert.equal(sent.status, 'PENDING');

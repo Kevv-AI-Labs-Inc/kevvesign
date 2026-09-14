@@ -45,7 +45,7 @@ A rollback should first stop new preparation/sending while preserving in-flight 
 
 ## Validation
 
-`pnpm test`: 14 contract tests. `pnpm lint`, `pnpm typecheck`, `pnpm build` passed.
+`pnpm test`: 19 contract and send-boundary tests. `pnpm lint`, `pnpm typecheck`, `pnpm build` passed. The review gate checks the freshly read native draft even when its cached projection is null or stale; already-issued/completed send retries remain idempotent.
 
 The local integration suites use fixed isolated endpoints and a private local fixture; they are not stand-alone CI setup scripts. They intentionally create and sign only synthetic documents via local Documenso/Mailpit. Run with the isolated stack established:
 

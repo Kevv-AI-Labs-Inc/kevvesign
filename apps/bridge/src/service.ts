@@ -1050,13 +1050,6 @@ export class SigningService {
         'SELECT * FROM signing.request_parts WHERE request_id=$1 ORDER BY part_index',
         [id],
       );
-      if (
-        action === 'send' &&
-        isCustomerPackage(request.scenario) &&
-        parts.some((p) => p.projection?.status === 'DRAFT') &&
-        reviewHash !== this.reviewHash(request, parts)
-      )
-        throw new BridgeError('REVIEW_REQUIRED', 409);
       let reminders = 0;
       for (const part of parts) {
         if (part.operation_state === 'discarded') continue;
@@ -1087,6 +1080,10 @@ export class SigningService {
         if (action === 'send') {
           if (document.status === 'PENDING' || document.status === 'COMPLETED') continue;
           if (document.status !== 'DRAFT') throw new BridgeError('DOCUMENT_CANNOT_BE_SENT', 409);
+          // A failed first sync can leave the cached projection null or stale.
+          // Gate the actual native draft, never the cached status, before sending.
+          if (isCustomerPackage(request.scenario) && reviewHash !== this.reviewHash(request, parts))
+            throw new BridgeError('REVIEW_REQUIRED', 409);
           if (part.delivery_state !== 'idle') throw new BridgeError('SEND_OUTCOME_UNKNOWN', 409);
           if (hr || isCustomerPackage(request.scenario)) {
             assertHrDraft(document, part.snapshot);
