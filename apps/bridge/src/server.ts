@@ -8,6 +8,7 @@ import { authenticate, webhookSecret, secretEquals } from './auth.js';
 import { SigningService } from './service.js';
 import { BridgeError, type FileInput } from './model.js';
 import { ProviderError } from './documenso.js';
+import { safeFilename, attachmentDisposition } from './review.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -166,6 +167,47 @@ export async function buildServer(config: BridgeConfig, service: SigningService)
       page,
     );
   });
+  app.post('/v1/connections/:id/templates', async (request, reply) => {
+    if (!request.principal.admin) throw new BridgeError('ADMIN_REQUIRED', 403);
+    if (!request.isMultipart()) throw new BridgeError('PDF_UPLOAD_REQUIRED', 400);
+    const files: FileInput[] = [];
+    let payload: unknown;
+    let total = 0;
+    for await (const part of request.parts()) {
+      if (part.type === 'file') {
+        if (
+          part.fieldname !== 'files' ||
+          part.mimetype !== 'application/pdf' ||
+          !part.filename.toLowerCase().endsWith('.pdf')
+        )
+          throw new BridgeError('ONLY_PDF_FILES_ALLOWED', 400);
+        const bytes = await part.toBuffer();
+        total += bytes.length;
+        if (part.file.truncated || total > 100 * 1024 * 1024)
+          throw new BridgeError('UPLOAD_TOO_LARGE', 413);
+        files.push({
+          name: part.filename.replace(/[^\p{L}\p{N} ._()-]/gu, '_').slice(-180),
+          bytes,
+        });
+      } else if (
+        part.fieldname === 'payload' &&
+        typeof part.value === 'string' &&
+        payload === undefined
+      ) {
+        payload = JSON.parse(part.value);
+      } else throw new BridgeError('INVALID_UPLOAD_FIELD', 400);
+    }
+    return reply
+      .code(201)
+      .send(
+        await service.uploadTemplate(
+          request.principal,
+          idParams.parse(request.params).id,
+          payload,
+          files,
+        ),
+      );
+  });
   app.get('/v1/packages', async (request) => ({
     items: await service.packages(request.principal),
   }));
@@ -196,45 +238,40 @@ export async function buildServer(config: BridgeConfig, service: SigningService)
     ),
   );
   app.post('/v1/requests', async (request, reply) => {
-    let input: unknown = request.body;
-    const files: FileInput[] = [];
-    if (request.isMultipart()) {
-      let total = 0;
-      for await (const part of request.parts()) {
-        if (part.type === 'file') {
-          if (
-            part.fieldname !== 'files' ||
-            !part.filename.toLowerCase().endsWith('.pdf') ||
-            part.mimetype !== 'application/pdf'
-          )
-            throw new BridgeError('ONLY_PDF_FILES_ALLOWED', 400);
-          const bytes = await part.toBuffer();
-          total += bytes.length;
-          if (part.file.truncated || total > 100 * 1024 * 1024)
-            throw new BridgeError('UPLOAD_TOO_LARGE', 413);
-          files.push({
-            name: part.filename.replace(/[^\p{L}\p{N} ._()-]/gu, '_').slice(-180),
-            bytes,
-          });
-        } else if (part.fieldname === 'payload' && typeof part.value === 'string')
-          input = JSON.parse(part.value);
-        else throw new BridgeError('INVALID_UPLOAD_FIELD', 400);
-      }
-    }
+    if (request.isMultipart()) throw new BridgeError('PERSONAL_SIGNING_UNAVAILABLE', 403);
+    const input = request.body,
+      files: FileInput[] = [];
     return reply.code(201).send(await service.create(request.principal, input, files));
   });
   app.get('/v1/requests/:id', async (request) =>
     service.detail(request.principal, idParams.parse(request.params).id),
   );
+  app.get('/v1/requests/:id/review', async (request) =>
+    service.review(request.principal, idParams.parse(request.params).id),
+  );
+  app.get('/v1/requests/:id/reissue', async (request) =>
+    service.reissueSeed(request.principal, idParams.parse(request.params).id),
+  );
+  app.get('/v1/requests/:id/bundle', async (request, reply) => {
+    const bundle = await service.bundle(request.principal, idParams.parse(request.params).id);
+    return reply
+      .type('application/zip')
+      .header('Content-Disposition', attachmentDisposition(bundle.name))
+      .send(bundle.bytes);
+  });
   app.post('/v1/requests/:id/refresh', async (request) =>
     service.refresh(request.principal, idParams.parse(request.params).id),
   );
   app.post('/v1/requests/:id/commands', async (request) => {
-    const { action, reason, recipientActor } = z
+    const { action, reason, recipientActor, reviewHash } = z
       .object({
         action: z.enum(['send', 'remind', 'cancel', 'discard', 'close']),
         reason: z.string().trim().min(5).max(2000).optional(),
         recipientActor: z.enum(['owner', 'company']).optional(),
+        reviewHash: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
       })
       .strict()
       .parse(request.body);
@@ -244,6 +281,7 @@ export async function buildServer(config: BridgeConfig, service: SigningService)
       action,
       reason,
       recipientActor,
+      reviewHash,
     );
   });
   app.post('/v1/requests/:id/parts/:partId/access', async (request) => {
@@ -265,9 +303,13 @@ export async function buildServer(config: BridgeConfig, service: SigningService)
           itemId: z.string().min(1).max(200).optional(),
         })
         .parse(request.query);
+    const detail = await service.detail(request.principal, id, false);
+    const part = detail.parts.find((p) => p.id === partId);
+    const file = part?.document?.files.find((f) => f.id === itemId);
+    const name = `${safeFilename(file?.title ?? detail.title)}-${kind}.pdf`;
     return reply
       .type('application/pdf')
-      .header('Content-Disposition', `attachment; filename="${kind}.pdf"`)
+      .header('Content-Disposition', attachmentDisposition(name))
       .send(await service.download(request.principal, id, partId, kind, itemId));
   });
   app.post('/webhooks/documenso/:id', async (request, reply) => {

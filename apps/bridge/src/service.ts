@@ -1,5 +1,8 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { zipSync, strToU8 } from 'fflate';
+import { requestListQuery } from './list-query.js';
+import { previewField, safeFilename } from './review.js';
 import type { Principal, BridgeConfig } from './config.js';
 import { BridgeStore } from './store.js';
 import { recipientIsCurrent } from './recipient-access.js';
@@ -25,6 +28,7 @@ import type {
   PublishedPart,
 } from './model.js';
 import { readTemplate, compileTemplate, assertTemplateVersion, assertHrDraft } from './packages.js';
+import { assertCompanyAccess, assertNewSigningScenario, isCustomerPackage } from './policy.js';
 
 export const connectionInput = z
   .object({
@@ -72,7 +76,8 @@ export class SigningService {
     return connection;
   }
   async targetConnection(principal: Principal, input: CreateInput) {
-    const company = ['onboarding', 'team_leader'].includes(input.scenario);
+    assertNewSigningScenario(principal, input.scenario, input.companyKey);
+    const company = input.scenario !== 'custom';
     const [connection] = await this.store.query<Connection>(
       `SELECT * FROM signing.connections WHERE client_id=$1 AND revoked_at IS NULL AND ${company ? "scope='company' AND company_key=$2" : "scope='customer' AND owner_agent_id=$2"}`,
       [principal.clientId, company ? input.companyKey : input.ownerAgentId],
@@ -89,6 +94,7 @@ export class SigningService {
   async registerConnection(principal: Principal, raw: unknown) {
     this.admin(principal);
     const input = connectionInput.parse(raw);
+    if (input.scope === 'customer') throw new BridgeError('PERSONAL_SIGNING_UNAVAILABLE', 403);
     const provider = new Documenso(this.config.DOCUMENSO_BASE_URL, input.token);
     const proof = await provider.get(input.proofEnvelopeId);
     if (
@@ -220,9 +226,15 @@ export class SigningService {
     });
   }
   async packages(principal: Principal) {
-    return this.store.query<PackageRow>(
+    const items = await this.store.query<PackageRow>(
       "SELECT p.*,c.native_email AS company_signer_email,c.native_name AS company_signer_name FROM signing.packages p JOIN signing.connections c ON c.client_id=p.client_id AND c.scope='company' AND c.company_key=p.company_key AND c.revoked_at IS NULL WHERE p.client_id=$1 AND p.retired_at IS NULL ORDER BY p.package_key,p.version DESC",
       [principal.clientId],
+    );
+    return items.filter(
+      (item) =>
+        !isCustomerPackage(item.scenario) ||
+        principal.admin ||
+        principal.allowedCompanyKeys?.includes(item.company_key),
     );
   }
   async templates(principal: Principal, connectionId: string, templateId?: string, page = 1) {
@@ -245,12 +257,15 @@ export class SigningService {
     if (
       template.type !== 'TEMPLATE' ||
       template.teamId !== connection.team_id ||
+      template.userId !== connection.native_user_id ||
+      template.user.email.toLowerCase() !== connection.native_email ||
       template.visibility !== 'ADMIN' ||
       template.deletedAt
     )
       throw new BridgeError('TEMPLATE_ACCESS_MISMATCH', 403);
     return {
       id: template.id,
+      editorUrl: provider.editorUrl(template),
       title: template.title,
       files: template.envelopeItems.map((item) => ({
         id: item.id,
@@ -274,9 +289,120 @@ export class SigningService {
         })),
     };
   }
+  async uploadTemplate(
+    principal: Principal,
+    connectionId: string,
+    raw: unknown,
+    files: FileInput[],
+  ) {
+    this.admin(principal);
+    const input = z
+      .object({ uploadId: z.uuid(), title: z.string().trim().min(1).max(200) })
+      .strict()
+      .parse(raw);
+    const connection = await this.connection(connectionId, principal.clientId);
+    if (connection.scope !== 'company') throw new BridgeError('COMPANY_TEMPLATES_ONLY', 403);
+    if (
+      !files.length ||
+      files.length > 10 ||
+      files.some(
+        (file) =>
+          !file.name.toLowerCase().endsWith('.pdf') ||
+          file.bytes.length > 25 * 1024 * 1024 ||
+          Buffer.from(file.bytes.subarray(0, 5)).toString() !== '%PDF-',
+      ) ||
+      files.reduce((n, file) => n + file.bytes.length, 0) > 100 * 1024 * 1024
+    )
+      throw new BridgeError('INVALID_PDF_UPLOAD', 400);
+    const hash = sha256(
+      canonical({
+        input,
+        connectionId,
+        files: files.map((file) => ({ name: file.name, hash: sha256(file.bytes) })),
+      }),
+    );
+    const externalId = `company-template:${input.uploadId}`;
+    await this.store.query(
+      'INSERT INTO signing.template_uploads(id,client_id,connection_id,actor_agent_id,request_hash,external_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING',
+      [input.uploadId, principal.clientId, connectionId, principal.agentId, hash, externalId],
+    );
+    return this.lease(input.uploadId, async () => {
+      const [row] = await this.store.query<{
+        request_hash: string;
+        provider_id: string | null;
+        state: string;
+      }>(
+        'SELECT * FROM signing.template_uploads WHERE id=$1 AND client_id=$2 AND connection_id=$3',
+        [input.uploadId, principal.clientId, connectionId],
+      );
+      if (!row || row.request_hash !== hash) throw new BridgeError('IDEMPOTENCY_KEY_REUSED', 409);
+      const provider = this.provider(connection);
+      let nativeId = row.provider_id;
+      if (!nativeId && ['creating', 'unknown'].includes(row.state)) {
+        const matches: string[] = [];
+        for (let page = 1; page <= 10; page++) {
+          const result = await provider.list({ type: 'TEMPLATE', query: externalId, page });
+          matches.push(
+            ...result.data.filter((item) => item.externalId === externalId).map((item) => item.id),
+          );
+          if (page >= result.totalPages) break;
+        }
+        if (matches.length !== 1) throw new BridgeError('CREATE_OUTCOME_UNKNOWN', 409);
+        nativeId = matches[0];
+      }
+      if (!nativeId) {
+        if (row.state === 'failed') throw new BridgeError('TEMPLATE_UPLOAD_FAILED', 409);
+        await this.store.query(
+          "UPDATE signing.template_uploads SET state='creating',updated_at=NOW() WHERE id=$1",
+          [input.uploadId],
+        );
+        try {
+          nativeId = await provider.create(
+            {
+              title: input.title,
+              type: 'TEMPLATE',
+              visibility: 'ADMIN',
+              delegatedDocumentOwner: connection.native_email,
+              externalId,
+              recipients: [],
+              meta: { distributionMethod: 'EMAIL', timezone: 'America/New_York' },
+            },
+            files,
+          );
+        } catch (error) {
+          await this.store.query(
+            'UPDATE signing.template_uploads SET state=$2,last_error=$3,updated_at=NOW() WHERE id=$1',
+            [
+              input.uploadId,
+              error instanceof ProviderError && !error.uncertain ? 'failed' : 'unknown',
+              error instanceof ProviderError ? error.code : 'TEMPLATE_UPLOAD_OUTCOME_UNKNOWN',
+            ],
+          );
+          throw error;
+        }
+      }
+      // Persist a known creation result before GET so a transient read failure
+      // never causes another template to be created on retry.
+      await this.store.query(
+        'UPDATE signing.template_uploads SET provider_id=$2,updated_at=NOW() WHERE id=$1',
+        [input.uploadId, nativeId],
+      );
+      const document = await provider.get(nativeId);
+      assertNativeOwner(document, connection, 'TEMPLATE');
+      if (document.type !== 'TEMPLATE' || document.externalId !== externalId || document.deletedAt)
+        throw new BridgeError('TEMPLATE_ACCESS_MISMATCH', 409);
+      await this.store.query(
+        "UPDATE signing.template_uploads SET state='ready',last_error=NULL,updated_at=NOW() WHERE id=$1",
+        [input.uploadId],
+      );
+      return { id: document.id, title: document.title, editorUrl: provider.editorUrl(document) };
+    });
+  }
   async publish(principal: Principal, raw: unknown) {
     this.admin(principal);
     const input = publishInput.parse(raw);
+    if (isCustomerPackage(input.scenario) && input.parts.length !== 1)
+      throw new BridgeError('STANDARD_PACKAGE_SINGLE_ENVELOPE', 400);
     const [connection] = await this.store.query<Connection>(
       "SELECT * FROM signing.connections WHERE client_id=$1 AND scope='company' AND company_key=$2 AND revoked_at IS NULL",
       [principal.clientId, input.companyKey],
@@ -369,7 +495,11 @@ export class SigningService {
     if (input.ownerAgentId !== principal.agentId)
       throw new BridgeError('OWNER_MUST_BE_CURRENT_AGENT', 403);
     const target = await this.targetConnection(principal, input);
-    const redirectUrl = `${principal.portalOrigin}${input.scenario === 'onboarding' ? '/pending' : input.scenario === 'team_leader' ? '/team-workspace' : `/signing/${requestId}`}`;
+    // Customer recipients stay on the native completion/download page, which
+    // does not require an agent's Portal session.
+    const redirectUrl = isCustomerPackage(input.scenario)
+      ? null
+      : `${principal.portalOrigin}${input.scenario === 'onboarding' ? '/pending' : input.scenario === 'team_leader' ? '/team-workspace' : `/signing/${requestId}`}`;
     if (input.scenario === 'custom') {
       if (!files.length || files.length > 10) throw new BridgeError('UPLOAD_PDF_FILES', 400);
       if (
@@ -422,6 +552,12 @@ export class SigningService {
     const parts = [];
     for (const part of packageRow.definition) {
       const source = await this.connection(part.connectionId, principal.clientId);
+      if (
+        source.scope !== 'company' ||
+        source.company_key !== input.companyKey ||
+        source.id !== target.id
+      )
+        throw new BridgeError('PACKAGE_COMPANY_MISMATCH', 409);
       const { document, files: templateFiles } = await readTemplate(
         this.provider(source),
         part,
@@ -465,6 +601,7 @@ export class SigningService {
   }
   async create(principal: Principal, raw: unknown, files: FileInput[] = []) {
     const input = createInput.parse(raw);
+    assertNewSigningScenario(principal, input.scenario, input.companyKey);
     if (input.ownerAgentId !== principal.agentId)
       throw new BridgeError('OWNER_MUST_BE_CURRENT_AGENT', 403);
     const hash = sha256(
@@ -481,6 +618,13 @@ export class SigningService {
       if (existing.request_hash !== hash) throw new BridgeError('IDEMPOTENCY_KEY_REUSED', 409);
       await this.processRequest(existing.id, principal.clientId);
       return this.detail(principal, existing.id);
+    }
+    if (input.predecessorRequestId) {
+      if (!isCustomerPackage(input.scenario) || !input.reissueReason)
+        throw new BridgeError('REISSUE_REASON_REQUIRED', 400);
+      const previous = await this.reissueSeed(principal, input.predecessorRequestId);
+      if (previous.companyKey !== input.companyKey || previous.scenario !== input.scenario)
+        throw new BridgeError('PACKAGE_COMPANY_MISMATCH', 403);
     }
     const id = randomUUID(),
       prepared = await this.prepare(principal, input, files, id);
@@ -545,6 +689,17 @@ export class SigningService {
         'INSERT INTO signing.events(request_id,client_id,actor_agent_id,event) VALUES($1,$2,$3,$4)',
         [id, principal.clientId, principal.agentId, 'request.prepared'],
       );
+      if (input.predecessorRequestId)
+        await tx.query(
+          'INSERT INTO signing.events(request_id,client_id,actor_agent_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+          [
+            id,
+            principal.clientId,
+            principal.agentId,
+            'request.reprepared',
+            { predecessorRequestId: input.predecessorRequestId, reason: input.reissueReason },
+          ],
+        );
       return id;
     });
     await this.processRequest(savedId, principal.clientId);
@@ -564,46 +719,34 @@ export class SigningService {
     input: { query?: string; category?: string; page?: number; hr?: boolean },
   ) {
     if (input.hr) this.admin(principal);
-    const rows = await this.store.query<RequestRow>(
-      `SELECT r.* FROM signing.requests r WHERE r.client_id=$1 AND (r.owner_agent_id=$2 OR $4::boolean) AND ${input.hr ? "r.scenario IN ('onboarding','team_leader')" : "r.scenario IN ('buyer','seller','custom')"} AND (r.title ILIKE $3 OR r.business->>'customer' ILIKE $3 OR r.business->>'property' ILIKE $3 OR EXISTS (SELECT 1 FROM signing.request_parts search_part CROSS JOIN LATERAL jsonb_array_elements(COALESCE(search_part.projection->'files','[]'::jsonb)) file WHERE search_part.request_id=r.id AND file->>'title' ILIKE $3)) ORDER BY r.updated_at DESC LIMIT 500`,
-      [
-        principal.clientId,
-        principal.agentId,
-        `%${(input.query || '').replace(/[\\%_]/g, '\\$&')}%`,
-        Boolean(input.hr),
-      ],
-    );
-    const items = [];
-    for (const row of rows) items.push(await this.detail(principal, row.id, false));
-    const filtered = input.category
-      ? items.filter((item) => item.category === input.category)
-      : items;
     const page = input.page ?? 1;
-    return {
-      items: filtered.slice((page - 1) * 30, page * 30),
-      page,
-      count: filtered.length,
-      truncated: rows.length === 500,
-    };
+    const [result] = await this.store.query<{ count: number; ids: string[] }>(requestListQuery, [
+      principal.clientId,
+      principal.agentId,
+      `%${(input.query || '').replace(/[\\%_]/g, '\\$&')}%`,
+      Boolean(input.hr),
+      input.category ?? null,
+      principal.verifiedEmails,
+      principal.admin,
+      (page - 1) * 30,
+    ]);
+    const items = await Promise.all(result.ids.map((id) => this.detail(principal, id, false)));
+    return { items, page, count: result.count, truncated: false };
   }
+
   async detail(principal: Principal, id: string, withEvents = true) {
     const request = await this.request(principal, id);
     const parts = await this.store.query<PartRow>(
       'SELECT * FROM signing.request_parts WHERE request_id=$1 ORDER BY part_index',
       [id],
     );
-    const hr = ['onboarding', 'team_leader'].includes(request.scenario);
     const projected = parts.map((part) => ({
       id: part.id,
       index: part.part_index,
       operationState: part.operation_state,
       error: part.last_error,
       lastSyncedAt: part.last_synced_at,
-      canEdit:
-        part.operation_state === 'linked' &&
-        part.projection?.status === 'DRAFT' &&
-        !hr &&
-        request.owner_agent_id === principal.agentId,
+      canEdit: false,
       document: part.projection
         ? {
             ...part.projection,
@@ -612,7 +755,7 @@ export class SigningService {
               canSign:
                 Boolean(part.projection && recipientIsCurrent(part.projection, recipient.id)) &&
                 principal.verifiedEmails.includes(recipient.email.toLowerCase()) &&
-                (!hr ||
+                (request.scenario === 'custom' ||
                   (recipient.actor === 'owner'
                     ? request.owner_agent_id === principal.agentId
                     : recipient.actor === 'company' && principal.admin)),
@@ -648,6 +791,7 @@ export class SigningService {
       scenario: request.scenario,
       business: request.business,
       ownerAgentId: request.owner_agent_id,
+      predecessorRequestId: request.input_snapshot.predecessorRequestId ?? null,
       createdAt: request.created_at,
       updatedAt: request.updated_at,
       category,
@@ -673,6 +817,23 @@ export class SigningService {
       if (locked)
         await client.query('SELECT pg_advisory_unlock(hashtextextended($1,0))', [lockKey]);
       client.release();
+    }
+  }
+  private async readLease<T>(id: string, fn: () => Promise<T>) {
+    // Read-only previews/downloads may briefly overlap a status refresh. Wait
+    // without holding a pool connection; mutation calls retain fail-fast locks.
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      try {
+        return await this.lease(id, fn);
+      } catch (error) {
+        if (
+          !(error instanceof BridgeError && error.code === 'REQUEST_BUSY') ||
+          Date.now() >= deadline
+        )
+          throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
     }
   }
   private async event(
@@ -871,8 +1032,11 @@ export class SigningService {
     action: 'send' | 'remind' | 'cancel' | 'discard' | 'close',
     reason?: string,
     recipientActor?: 'owner' | 'company',
+    reviewHash?: string,
   ) {
     const request = await this.request(principal, id);
+    if (isCustomerPackage(request.scenario))
+      assertCompanyAccess(principal, request.input_snapshot.companyKey);
     const hr = ['onboarding', 'team_leader'].includes(request.scenario);
     if (
       hr &&
@@ -886,6 +1050,13 @@ export class SigningService {
         'SELECT * FROM signing.request_parts WHERE request_id=$1 ORDER BY part_index',
         [id],
       );
+      if (
+        action === 'send' &&
+        isCustomerPackage(request.scenario) &&
+        parts.some((p) => p.projection?.status === 'DRAFT') &&
+        reviewHash !== this.reviewHash(request, parts)
+      )
+        throw new BridgeError('REVIEW_REQUIRED', 409);
       let reminders = 0;
       for (const part of parts) {
         if (part.operation_state === 'discarded') continue;
@@ -917,13 +1088,15 @@ export class SigningService {
           if (document.status === 'PENDING' || document.status === 'COMPLETED') continue;
           if (document.status !== 'DRAFT') throw new BridgeError('DOCUMENT_CANNOT_BE_SENT', 409);
           if (part.delivery_state !== 'idle') throw new BridgeError('SEND_OUTCOME_UNKNOWN', 409);
-          if (hr) {
+          if (hr || isCustomerPackage(request.scenario)) {
             assertHrDraft(document, part.snapshot);
             const [published] = await this.store.query<PackageRow>(
               'SELECT p.* FROM signing.packages p JOIN signing.requests r ON r.package_id=p.id WHERE r.id=$1',
               [request.id],
             );
             const expectedFiles = published?.definition[part.part_index]?.files;
+            if (isCustomerPackage(request.scenario) && published?.retired_at)
+              throw new BridgeError('PACKAGE_RETIRED', 409);
             if (!expectedFiles || expectedFiles.length !== document.envelopeItems.length)
               throw new BridgeError('HR_DRAFT_CHANGED', 409);
             for (const [index, file] of document.envelopeItems.entries())
@@ -1031,6 +1204,9 @@ export class SigningService {
     recipientId?: number,
   ) {
     const request = await this.request(principal, requestId);
+    if (kind === 'editor') throw new BridgeError('PERSONAL_SIGNING_UNAVAILABLE', 403);
+    if (isCustomerPackage(request.scenario))
+      assertCompanyAccess(principal, request.input_snapshot.companyKey);
     const [part] = await this.store.query<PartRow>(
       'SELECT * FROM signing.request_parts WHERE id=$1 AND request_id=$2',
       [partId, requestId],
@@ -1039,29 +1215,21 @@ export class SigningService {
     return this.lease(requestId, async () => {
       const { document, connection, bindings } = await this.syncPart(part, principal.clientId),
         provider = this.provider(connection);
-      if (kind === 'editor') {
-        if (connection.scope === 'company') throw new BridgeError('HR_DRAFT_IS_CONTROLLED', 409);
-        if (document.status !== 'DRAFT') throw new BridgeError('ONLY_DRAFTS_CAN_BE_EDITED', 409);
-        if (
-          request.owner_agent_id !== principal.agentId ||
-          !principal.verifiedEmails.includes(connection.native_email)
-        )
-          throw new BridgeError('EDITOR_ACCESS_DENIED', 403);
-        return {
-          url: provider.editorUrl(document),
-          returnUrl: `${principal.portalOrigin}/signing/${requestId}`,
-        };
-      }
       if (document.status !== 'PENDING')
         throw new BridgeError('DOCUMENT_NOT_AWAITING_SIGNATURE', 409);
       const recipient = document.recipients.find(
         (r) => r.id === recipientId && principal.verifiedEmails.includes(r.email.toLowerCase()),
       );
-      if (!recipient || recipient.role === 'CC' || recipient.signingStatus !== 'NOT_SIGNED')
+      if (
+        !recipient ||
+        !recipientIsCurrent(projectEnvelope(document, bindings), recipient.id) ||
+        recipient.role === 'CC' ||
+        recipient.signingStatus !== 'NOT_SIGNED'
+      )
         throw new BridgeError('SIGNER_ACCESS_DENIED', 403);
       if (recipient.expiresAt && Date.parse(recipient.expiresAt) <= Date.now())
         throw new BridgeError('SIGNING_LINK_EXPIRED', 409);
-      if (connection.scope === 'company') {
+      if (connection.scope === 'company' || isCustomerPackage(request.scenario)) {
         const binding = bindings.find((b) => b.nativeId === recipient.id);
         if (
           !binding ||
@@ -1088,13 +1256,118 @@ export class SigningService {
       [partId, requestId],
     );
     if (!part || part.operation_state !== 'linked') throw new BridgeError('NOT_FOUND', 404);
-    return this.lease(requestId, async () => {
+    return this.readLease(requestId, async () => {
       const { document, connection } = await this.syncPart(part, principal.clientId),
         provider = this.provider(connection);
       if (kind === 'audit-log' || kind === 'certificate')
         return provider.certificate(document.id, kind);
       if (!itemId) throw new BridgeError('DOCUMENT_ITEM_REQUIRED', 400);
       return provider.document(document.id, itemId, kind);
+    });
+  }
+  private reviewHash(request: RequestRow, parts: PartRow[]) {
+    return sha256(
+      canonical({
+        request: request.request_hash,
+        parts: parts.map((p) => ({ id: p.id, providerId: p.provider_id, snapshot: p.snapshot })),
+      }),
+    );
+  }
+  async review(principal: Principal, id: string) {
+    const request = await this.request(principal, id);
+    if (!isCustomerPackage(request.scenario))
+      throw new BridgeError('STANDARD_PACKAGE_REQUIRED', 400);
+    assertCompanyAccess(principal, request.input_snapshot.companyKey);
+    return this.readLease(id, async () => {
+      const parts = await this.store.query<PartRow>(
+        'SELECT * FROM signing.request_parts WHERE request_id=$1 ORDER BY part_index',
+        [id],
+      );
+      const files = [];
+      for (const part of parts) {
+        if (part.operation_state !== 'linked') throw new BridgeError('DOCUMENT_NOT_READY', 409);
+        const { document } = await this.syncPart(part, principal.clientId);
+        if (document.status !== 'DRAFT') throw new BridgeError('DOCUMENT_CANNOT_BE_SENT', 409);
+        assertHrDraft(document, part.snapshot);
+        for (const file of document.envelopeItems)
+          files.push({
+            partId: part.id,
+            id: file.id,
+            title: file.title,
+            fields: document.fields
+              .filter((f) => f.envelopeItemId === file.id)
+              .map((f) => previewField(f, document)),
+          });
+      }
+      return { reviewHash: this.reviewHash(request, parts), files };
+    });
+  }
+  async reissueSeed(principal: Principal, id: string) {
+    const request = await this.request(principal, id);
+    if (!isCustomerPackage(request.scenario))
+      throw new BridgeError('STANDARD_PACKAGE_REQUIRED', 400);
+    assertCompanyAccess(principal, request.input_snapshot.companyKey);
+    await this.processRequest(id, principal.clientId);
+    const parts = await this.store.query<PartRow>(
+      'SELECT * FROM signing.request_parts WHERE request_id=$1',
+      [id],
+    );
+    if (
+      !parts.length ||
+      parts.some(
+        (p) =>
+          p.operation_state !== 'discarded' &&
+          (p.operation_state !== 'linked' ||
+            p.delivery_state === 'unknown' ||
+            !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(p.projection?.status ?? '')),
+      )
+    )
+      throw new BridgeError('PREVIOUS_REQUEST_STILL_OPEN', 409);
+    const {
+      idempotencyKey: _key,
+      externalReference: _ref,
+      reissueReason: _reason,
+      ...input
+    } = request.input_snapshot;
+    return { ...input, predecessorRequestId: id };
+  }
+  async bundle(principal: Principal, id: string) {
+    const request = await this.request(principal, id);
+    return this.readLease(id, async () => {
+      const parts = await this.store.query<PartRow>(
+        'SELECT * FROM signing.request_parts WHERE request_id=$1 ORDER BY part_index',
+        [id],
+      );
+      if (!parts.length) throw new BridgeError('SIGNED_PDF_NOT_READY', 409);
+      const entries: Record<string, Uint8Array> = {};
+      const manifest: Array<{ path: string; sha256: string; bytes: number }> = [];
+      let total = 0;
+      const add = (path: string, bytes: Uint8Array) => {
+        total += bytes.length;
+        if (total > 200 * 1024 * 1024) throw new BridgeError('BUNDLE_TOO_LARGE', 413);
+        entries[path] = bytes;
+        manifest.push({ path, sha256: sha256(bytes), bytes: bytes.length });
+      };
+      for (const part of parts) {
+        const { document, connection } = await this.syncPart(part, principal.clientId);
+        if (document.status !== 'COMPLETED') throw new BridgeError('SIGNED_PDF_NOT_READY', 409);
+        const provider = this.provider(connection),
+          folder = String(part.part_index + 1).padStart(2, '0');
+        for (const [index, file] of document.envelopeItems.entries())
+          add(
+            `${folder}/${String(index + 1).padStart(2, '0')}-${safeFilename(file.title)}.pdf`,
+            await provider.document(document.id, file.id, 'signed'),
+          );
+        for (const kind of ['certificate', 'audit-log'] as const)
+          add(`${folder}/${kind}.pdf`, await provider.certificate(document.id, kind));
+      }
+      entries['manifest.json'] = strToU8(
+        JSON.stringify({ requestId: id, title: request.title, files: manifest }, null, 2),
+      );
+      return {
+        name: `${safeFilename(request.title)}.zip`,
+        bytes: Buffer.from(zipSync(entries, { level: 0 })),
+      };
     });
   }
   async receiveWebhook(connectionId: string, raw: unknown) {
@@ -1219,7 +1492,7 @@ export class SigningService {
       external_id: string | null;
       client_id: string;
     }>(
-      'SELECT w.*,c.client_id FROM signing.webhook_inbox w JOIN signing.connections c ON c.id=w.connection_id WHERE w.processed_at IS NULL AND c.revoked_at IS NULL ORDER BY w.received_at LIMIT 100',
+      'SELECT w.*,c.client_id FROM signing.webhook_inbox w JOIN signing.connections c ON c.id=w.connection_id WHERE w.processed_at IS NULL AND w.next_attempt_at <= NOW() AND c.revoked_at IS NULL ORDER BY w.next_attempt_at,w.received_at,w.digest LIMIT 100',
     );
     for (const message of inbox) {
       try {
@@ -1249,7 +1522,7 @@ export class SigningService {
         );
       } catch (error) {
         await this.store.query(
-          'UPDATE signing.webhook_inbox SET attempts=attempts+1,last_error=$2 WHERE digest=$1',
+          'UPDATE signing.webhook_inbox SET attempts=attempts+1,last_error=$2,next_attempt_at=NOW()+make_interval(secs=>LEAST(3600,30*power(2,LEAST(attempts,7)))::int) WHERE digest=$1',
           [
             message.digest,
             error instanceof BridgeError || error instanceof ProviderError
@@ -1263,9 +1536,13 @@ export class SigningService {
       request_id: string;
       client_id: string;
     }>(
-      "SELECT p.request_id,r.client_id FROM signing.request_parts p JOIN signing.requests r ON r.id=p.request_id JOIN signing.connections c ON c.id=p.connection_id WHERE c.revoked_at IS NULL AND p.operation_state NOT IN ('failed','discarded') AND (p.last_synced_at IS NULL OR p.last_synced_at < NOW()-INTERVAL '2 minutes') AND (p.projection IS NULL OR p.projection->>'status' NOT IN ('COMPLETED','CANCELLED','REJECTED') OR p.last_error IS NOT NULL) GROUP BY p.request_id,r.client_id ORDER BY MIN(COALESCE(p.last_synced_at,p.created_at)) LIMIT 30",
+      "SELECT p.request_id,r.client_id FROM signing.request_parts p JOIN signing.requests r ON r.id=p.request_id JOIN signing.connections c ON c.id=p.connection_id WHERE c.revoked_at IS NULL AND p.next_reconcile_at <= NOW() AND p.operation_state NOT IN ('failed','discarded') AND (p.last_synced_at IS NULL OR p.last_synced_at < NOW()-INTERVAL '2 minutes') AND (p.projection IS NULL OR p.projection->>'status' NOT IN ('COMPLETED','CANCELLED','REJECTED') OR p.last_error IS NOT NULL) GROUP BY p.request_id,r.client_id ORDER BY MIN(p.next_reconcile_at),p.request_id LIMIT 30",
     );
     for (const row of pending) {
+      await this.store.query(
+        'UPDATE signing.request_parts SET reconcile_attempts=reconcile_attempts+1,next_reconcile_at=NOW()+make_interval(secs=>LEAST(3600,30*power(2,LEAST(reconcile_attempts,7)))::int) WHERE request_id=$1',
+        [row.request_id],
+      );
       try {
         await this.processRequest(row.request_id, row.client_id);
       } catch (error) {
@@ -1282,6 +1559,9 @@ export class SigningService {
           );
       }
     }
+    await this.store.query(
+      "UPDATE signing.request_parts SET reconcile_attempts=0,next_reconcile_at=last_synced_at+INTERVAL '2 minutes' WHERE reconcile_attempts>0 AND last_error IS NULL AND last_synced_at > NOW()-INTERVAL '2 minutes'",
+    );
     await this.deliverPortalEvents();
   }
 }

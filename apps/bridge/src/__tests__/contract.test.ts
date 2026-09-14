@@ -9,6 +9,7 @@ import {
 import { authenticate, webhookSecret } from '../auth.js';
 import { recipientIsCurrent } from '../recipient-access.js';
 import { loadBridgeConfig } from '../config.js';
+import { attachmentDisposition, previewField, safeFilename } from '../review.js';
 import {
   assertNativeOwner,
   bindRecipients,
@@ -126,6 +127,34 @@ const part: TemplatePart = {
 };
 
 describe('native mapping and published packages', () => {
+  it('rejects ambiguous sequential ranks but permits fully parallel signing', () => {
+    const native = document();
+    native.recipients[1].signingOrder = native.recipients[0].signingOrder;
+    expect(() => validateTemplate(native, part, connection)).toThrow(
+      'SEQUENTIAL_ORDER_MUST_BE_DISTINCT',
+    );
+    native.recipients[1].signingOrder = null;
+    expect(() => validateTemplate(native, part, connection)).toThrow(
+      'SEQUENTIAL_ORDER_MUST_BE_DISTINCT',
+    );
+    native.documentMeta!.signingOrder = 'PARALLEL';
+    expect(() => validateTemplate(native, part, connection)).not.toThrow();
+  });
+  it('keeps preview credentials private and international download names header-safe', () => {
+    const native = document();
+    const preview = JSON.stringify(previewField(native.fields[0], native));
+    expect(preview).toContain('Signer 1');
+    expect(preview).not.toContain('private-token');
+    expect(preview).not.toContain('private-storage');
+    const name = safeFilename('../买家\r\n包.pdf');
+    expect(name).not.toMatch(/[\r\n/\\]/);
+    expect(name).not.toMatch(/^\./);
+    const header = attachmentDisposition(`${name}.pdf`);
+    expect(header).toContain("filename*=UTF-8''");
+    expect(header).toContain(encodeURIComponent('买家'));
+    expect(header).not.toMatch(/[\r\n]/);
+    expect(attachmentDisposition('完成件.zip')).toContain('signing-document.zip');
+  });
   it('rejects changed HR draft fields, prefills and routing before sending', () => {
     const native = document();
     native.fields[2].fieldMeta = {

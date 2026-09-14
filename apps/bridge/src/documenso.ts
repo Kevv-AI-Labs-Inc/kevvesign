@@ -240,7 +240,7 @@ export class Documenso {
     return `${this.origin}/sign/${encodeURIComponent(recipient.token)}`;
   }
   editorUrl(document: NativeEnvelope) {
-    return `${this.origin}/t/${encodeURIComponent(document.team.url)}/documents/${encodeURIComponent(document.id)}/edit`;
+    return `${this.origin}/t/${encodeURIComponent(document.team.url)}/${document.type === 'TEMPLATE' ? 'templates' : 'documents'}/${encodeURIComponent(document.id)}/edit`;
   }
 }
 

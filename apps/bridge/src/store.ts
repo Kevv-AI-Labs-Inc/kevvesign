@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS signing.connections (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS connection_agent ON signing.connections(client_id,owner_agent_id) WHERE scope='customer' AND revoked_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS connection_company ON signing.connections(client_id,company_key) WHERE scope='company' AND revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS signing.template_uploads (
+ id UUID PRIMARY KEY, client_id TEXT NOT NULL,
+ connection_id UUID NOT NULL REFERENCES signing.connections(id) ON DELETE RESTRICT,
+ actor_agent_id INTEGER NOT NULL, request_hash TEXT NOT NULL, external_id TEXT NOT NULL UNIQUE,
+ provider_id TEXT, state TEXT NOT NULL DEFAULT 'prepared' CHECK(state IN ('prepared','creating','unknown','ready','failed')),
+ last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS signing.packages (
  id UUID PRIMARY KEY, client_id TEXT NOT NULL, package_key TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0),
  title TEXT NOT NULL, scenario TEXT NOT NULL CHECK(scenario IN ('onboarding','team_leader','buyer','seller')),
@@ -100,6 +107,12 @@ CREATE TABLE IF NOT EXISTS signing.webhook_inbox (
  event TEXT NOT NULL, provider_id TEXT NOT NULL, external_id TEXT,
  received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), processed_at TIMESTAMPTZ, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
 );
+ALTER TABLE signing.webhook_inbox ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE signing.request_parts ADD COLUMN IF NOT EXISTS next_reconcile_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE signing.request_parts ADD COLUMN IF NOT EXISTS reconcile_attempts INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS webhook_inbox_pending_retry ON signing.webhook_inbox(next_attempt_at,received_at) WHERE processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS parts_reconcile_retry ON signing.request_parts(next_reconcile_at) WHERE operation_state <> 'discarded';
+CREATE INDEX IF NOT EXISTS requests_owner_page ON signing.requests(client_id,owner_agent_id,updated_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS signing.request_uploads (
  part_id UUID NOT NULL REFERENCES signing.request_parts(id) ON DELETE RESTRICT,
  file_index INTEGER NOT NULL, name TEXT NOT NULL, sha256 TEXT NOT NULL, content_ciphertext TEXT NOT NULL,

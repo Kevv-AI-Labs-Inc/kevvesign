@@ -8,6 +8,10 @@ const actorSchema = z
     agentId: z.number().int().positive(),
     admin: z.boolean(),
     verifiedEmails: z.array(email).min(1).max(30),
+    allowedCompanyKeys: z
+      .array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/))
+      .max(30)
+      .optional(),
   })
   .strict();
 export function secretEquals(actual: string, expected: string) {

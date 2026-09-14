@@ -50,9 +50,18 @@ export function validateTemplate(
     document.type !== 'TEMPLATE' ||
     document.deletedAt ||
     document.teamId !== connection.team_id ||
+    document.userId !== connection.native_user_id ||
+    document.user.email.toLowerCase() !== connection.native_email ||
     document.visibility !== 'ADMIN'
   )
     throw new BridgeError('TEMPLATE_ACCESS_MISMATCH', 409);
+  // Native 2.18 uses a strict sequential recipient list, not parallel groups.
+  // Equal ranks can disagree between turn checks and the invitation job.
+  if (document.documentMeta?.signingOrder === 'SEQUENTIAL') {
+    const ranks = document.recipients.filter((r) => r.role !== 'CC').map((r) => r.signingOrder);
+    if (ranks.some((rank) => rank === null) || new Set(ranks).size !== ranks.length)
+      throw new BridgeError('SEQUENTIAL_ORDER_MUST_BE_DISTINCT', 400);
+  }
   const roleIds = part.roles.map((r) => r.templateRecipientId);
   if (
     new Set(roleIds).size !== roleIds.length ||
@@ -122,7 +131,7 @@ export function compileTemplate(
   part: PublishedPart,
   input: CreateInput,
   target: Connection,
-  redirectUrl: string,
+  redirectUrl: string | null,
 ): PreparedPart {
   const bindings = part.roles.map((role) => {
     const recipient = input.recipients.find((r) => r.key === role.key);
@@ -170,6 +179,9 @@ export function compileTemplate(
         }),
     };
   });
+  const meta = createMeta(document.documentMeta);
+  delete meta.redirectUrl;
+  if (redirectUrl) meta.redirectUrl = redirectUrl;
   return {
     files,
     bindings,
@@ -180,7 +192,7 @@ export function compileTemplate(
       visibility: 'ADMIN',
       delegatedDocumentOwner: target.native_email,
       recipients,
-      meta: { ...createMeta(document.documentMeta), redirectUrl, distributionMethod: 'EMAIL' },
+      meta: { ...meta, distributionMethod: 'EMAIL' },
     },
   };
 }

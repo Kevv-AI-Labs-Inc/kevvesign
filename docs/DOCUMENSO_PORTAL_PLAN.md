@@ -2,6 +2,8 @@
 
 日期：2026-09-12
 
+> 2026-09-13 范围更新：标准 buyer/seller/Listing 包改为公司持有，不需要经纪人原生账号；个人上传与原生编辑延后。第一阶段实现及当前边界以 [COMPANY_PACKAGES.md](COMPANY_PACKAGES.md) 为准，下文保留先前方案的历史背景。
+
 状态：已完成 Documenso 集成、两仓库 GitHub PR/CI 合并及正式站上线验证；旧签署 API 已停用、旧 PDF 自动触发已关闭，50 项旧 Portal 签署配置已移除。公司正式买卖文件及逐人原生账号连接按业务配置补充。
 核对基线：eSign `1d3e1bd`，Portal `a02c539`。
 
