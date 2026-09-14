@@ -28,7 +28,12 @@ import type {
   PublishedPart,
 } from './model.js';
 import { readTemplate, compileTemplate, assertTemplateVersion, assertHrDraft } from './packages.js';
-import { assertCompanyAccess, assertNewSigningScenario, isCustomerPackage } from './policy.js';
+import {
+  assertCompanyAccess,
+  assertNewSigningScenario,
+  isCustomerPackage,
+  packageCompanyKeys,
+} from './policy.js';
 
 export const connectionInput = z
   .object({
@@ -234,7 +239,7 @@ export class SigningService {
       (item) =>
         !isCustomerPackage(item.scenario) ||
         principal.admin ||
-        principal.allowedCompanyKeys?.includes(item.company_key),
+        packageCompanyKeys(item).some((company) => principal.allowedCompanyKeys?.includes(company)),
     );
   }
   async templates(principal: Principal, connectionId: string, templateId?: string, page = 1) {
@@ -408,6 +413,13 @@ export class SigningService {
       [principal.clientId, input.companyKey],
     );
     if (!connection) throw new BridgeError('COMPANY_SIGNING_NOT_CONFIGURED', 409);
+    const applicableCompanies = input.applicableCompanyKeys || [input.companyKey];
+    const configuredCompanies = await this.store.query<{ company_key: string }>(
+      "SELECT company_key FROM signing.connections WHERE client_id=$1 AND scope='company' AND revoked_at IS NULL AND company_key=ANY($2::text[])",
+      [principal.clientId, applicableCompanies],
+    );
+    if (configuredCompanies.length !== applicableCompanies.length)
+      throw new BridgeError('COMPANY_SIGNING_NOT_CONFIGURED', 409);
     const definition: PublishedPart[] = [];
     const sharedFieldFormats = new Map<string, string>();
     for (const part of input.parts) {
@@ -437,6 +449,8 @@ export class SigningService {
           sharedFieldFormats.set(prefill.key, format);
           return {
             ...prefill,
+            recipientKey: part.roles.find((role) => role.templateRecipientId === field.recipientId)!
+              .key,
             valueType: field.type,
             options,
           };
@@ -452,7 +466,7 @@ export class SigningService {
     const id = randomUUID();
     await this.store.transaction(async (tx) => {
       await tx.query(
-        'INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+        'INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by,applicable_company_keys) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
         [
           id,
           principal.clientId,
@@ -464,6 +478,7 @@ export class SigningService {
           input.selectors,
           JSON.stringify(definition),
           principal.agentId,
+          applicableCompanies,
         ],
       );
       await tx.query(
@@ -543,7 +558,7 @@ export class SigningService {
     if (
       !packageRow ||
       packageRow.scenario !== input.scenario ||
-      packageRow.company_key !== input.companyKey
+      !packageCompanyKeys(packageRow).includes(input.companyKey)
     )
       throw new BridgeError('PACKAGE_NOT_AVAILABLE', 409);
     const roleKeys = new Set(packageRow.definition.flatMap((p) => p.roles.map((r) => r.key)));
@@ -554,8 +569,10 @@ export class SigningService {
       const source = await this.connection(part.connectionId, principal.clientId);
       if (
         source.scope !== 'company' ||
-        source.company_key !== input.companyKey ||
-        source.id !== target.id
+        source.company_key !== packageRow.company_key ||
+        (source.id !== target.id &&
+          (!isCustomerPackage(input.scenario) ||
+            !packageCompanyKeys(packageRow).includes(target.company_key!)))
       )
         throw new BridgeError('PACKAGE_COMPANY_MISMATCH', 409);
       const { document, files: templateFiles } = await readTemplate(
@@ -575,7 +592,7 @@ export class SigningService {
           (!recipient || !principal.verifiedEmails.includes(recipient.email))
         )
           throw new BridgeError('OWNER_RECIPIENT_NOT_VERIFIED', 403);
-        if (role.actor === 'company' && recipient?.email !== source.native_email)
+        if (role.actor === 'company' && recipient?.email !== target.native_email)
           throw new BridgeError('COMPANY_RECIPIENT_NOT_VERIFIED', 403);
       }
       parts.push(compileTemplate(document, templateFiles, part, input, target, redirectUrl));

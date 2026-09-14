@@ -1,5 +1,11 @@
 import type { Principal } from './config.js';
-import { BridgeError } from './model.js';
+import { BridgeError, type PackageRow } from './model.js';
+
+export function packageCompanyKeys(
+  item: Pick<PackageRow, 'company_key' | 'applicable_company_keys'>,
+) {
+  return item.applicable_company_keys?.length ? item.applicable_company_keys : [item.company_key];
+}
 
 export const isCustomerPackage = (scenario: string) =>
   scenario === 'buyer' || scenario === 'seller';

@@ -6,8 +6,8 @@ This document supersedes the older requirement to connect each agent's native ac
 
 ## Ownership and scope
 
-- New `buyer`/`seller` requests use the same company connection as the published source package. Listing and direct-buyer packages are company-defined variants of these scenarios. Templates and envelopes remain owned by the company native user/team.
-- The trusted Portal actor includes `allowedCompanyKeys` from the current active agent record. Bridge independently checks this list for standard-package creation/catalog and verifies source/target company and connection equality. `ownerAgentId` remains task authorization, not native ownership. Existing saved connection IDs are not rewritten.
+- New `buyer`/`seller` requests use the current agent company connection; approved shared masters may live in another company connection. Listing and direct-buyer packages are company-defined variants of these scenarios. Templates and envelopes remain owned by the company native user/team.
+- The trusted Portal actor includes `allowedCompanyKeys` from the current active agent record. Bridge independently checks this list for standard-package creation/catalog and verifies the source template owner and explicitly published target-company applicability. `ownerAgentId` remains task authorization, not native ownership. Existing saved connection IDs are not rewritten.
 - A task owner can obtain only their own current verified signer role's link; administrator access does not permit customer impersonation. Standard tasks never grant native editor access. Company administrators may open company **template** editors using their existing administrative login.
 - New `custom` tasks, multipart personal document creation and new customer connection registration return `PERSONAL_SIGNING_UNAVAILABLE`. Existing legacy connections can be rotated/revoked and historical tasks read under their saved ownership. No account provisioning or SSO is introduced.
 
@@ -16,7 +16,7 @@ This document supersedes the older requirement to connect each agent's native ac
 1. Portal `/admin/signing` stages administrator PDFs in the existing private object store. A validated company-specific finalize route forwards the files to `POST /v1/connections/:id/templates`.
 2. Bridge requires a company connection, administrator principal, PDF magic bytes, at most 10 files / 25 MiB each / 100 MiB total. Metadata includes a stable `uploadId` and title. Durable `template_uploads` stores intent/hash and native external ID before creation; uncertain outcomes reconcile that external ID before permitting another create.
 3. Administrator configures native template recipients, fields and routing, then maps semantic roles/prefills and publishes through the existing package API. Upload/configuration does not send invitations.
-4. Customer packages require **one native template/envelope containing all relevant PDFs**. This gives each recipient one signing flow. Separate published variants encode one/two clients and distinct business situations; do not silently remove fixed recipients at send time.
+4. Customer packages require **one native template/envelope containing all relevant PDFs**. This gives each recipient one signing flow. Business situations use distinct master templates. A customer role explicitly published with `optional: true` is activated only when included at preparation. Its fields and required prefills are omitted together when absent; mandatory clients/agent roles cannot be omitted. One master supports one/two clients.
 5. Sequential non-CC recipient ranks must be distinct and non-null. Documenso 2.18.0 can disagree between invitation and current-turn logic for equal ranks. Use strict sequential order or fully parallel recipients. Invalid templates fail publication with `SEQUENTIAL_ORDER_MUST_BE_DISTINCT`.
 
 Do not publish draft legal material. Company approval covers PDFs, company/scenario, signer roles/order, per-page geometry, required/readonly values and choice options. Copy templates and publish a new version for changes. Retired packages cannot send an unsent prepared task; issued tasks retain their saved state.
@@ -45,7 +45,7 @@ A rollback should first stop new preparation/sending while preserving in-flight 
 
 ## Validation
 
-`pnpm test`: 19 contract and send-boundary tests. `pnpm lint`, `pnpm typecheck`, `pnpm build` passed. The review gate checks the freshly read native draft even when its cached projection is null or stale; already-issued/completed send retries remain idempotent.
+`pnpm test`: 21 contract and send-boundary tests. `pnpm lint`, `pnpm typecheck`, `pnpm build` passed. The review gate checks the freshly read native draft even when its cached projection is null or stale; already-issued/completed send retries remain idempotent.
 
 The local integration suites use fixed isolated endpoints and a private local fixture; they are not stand-alone CI setup scripts. They intentionally create and sign only synthetic documents via local Documenso/Mailpit. Run with the isolated stack established:
 
@@ -57,3 +57,11 @@ node --import tsx apps/bridge/src/__tests__/company-state.integration.ts
 They cover company PDF upload/publication, agents without native accounts, one/two client completion, native signed PDF byte equality inside ZIP, no-account client downloads, authorization, review/send gating, reissue/decline/cancellation/expiry/unknown/retired state, 615 rows over 21 pages, category/count parity and 101 failing webhooks preceding a healthy event.
 
 Portal additionally passed actual HTTP/private-S3 integration, HR preparation/callback retry regression and an actual 390×844 final-client signing flow across two PDFs. Formal company PDFs and production mail/payment were not tested in this change. The companion Portal record is `docs/qa/2026-09-13-company-packages/README.md`.
+
+## Shared masters and company settings (2026-09-14)
+
+`applicableCompanyKeys` explicitly lists approved company connections and includes the source company. It is available only for buyer/seller packages without a fixed company signer. The Portal resolves the current agent company server-side, pins its legal name and reads its Broker license from administrator company settings. The agent represents that company; neither clients nor agents need native editing accounts. A package's immutable source fingerprint includes the complete optional-role master; prepared envelopes snapshot only selected recipients.
+
+The additive `signing.packages.applicable_company_keys` column defaults to an empty array; historical packages fall back to their source company. Deploy Bridge before Portal. No existing source/target connection or historical document is moved.
+
+Local acceptance: `node --import tsx apps/bridge/src/__tests__/shared-buyer.integration.ts` completed four native signing/download cases (Realty/Living × one/two buyers) using one master and synthetic documents. Companion Portal HTTP acceptance verifies fresh profile/settings values and spoof rejection. These tests require the existing isolated local fixture; never point them at production.
