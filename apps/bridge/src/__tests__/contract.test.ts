@@ -127,6 +127,97 @@ const part: TemplatePart = {
 };
 
 describe('native mapping and published packages', () => {
+  it('uses one immutable master for one or two buyers, including optional prefills', () => {
+    const native = document();
+    native.fields[2].recipientId = 2;
+    native.fields[2].fieldMeta = { type: 'text', readOnly: true };
+    const published = {
+      ...part,
+      roles: part.roles.map((role, i) => ({ ...role, optional: i === 1 })),
+      fingerprint: templateFingerprint(native, ['a', 'b']),
+      files: [],
+      connectionId: connection.id,
+    };
+    const input = createInput.parse({
+      idempotencyKey: 'optional-test',
+      externalReference: 'optional-test',
+      title: 'QA',
+      scenario: 'buyer',
+      companyKey: 'qa',
+      ownerAgentId: 42,
+      packageId: connection.id,
+      recipients: [{ key: 'buyer1', name: 'Buyer One', email: 'one@example.invalid' }],
+    });
+    const one = compileTemplate(native, [], published, input, connection, null);
+    expect(one.bindings.map((r) => r.key)).toEqual(['buyer1']);
+    expect(one.payload.recipients).toHaveLength(1);
+    expect((one.payload.recipients as Array<{ fields: unknown[] }>)[0].fields).toHaveLength(1);
+    input.recipients.push({ key: 'buyer2', name: 'Buyer Two', email: 'two@example.invalid' });
+    expect(() => compileTemplate(native, [], published, input, connection, null)).toThrow(
+      'MISSING_VALUE:address',
+    );
+    input.values.address = '   ';
+    expect(() => compileTemplate(native, [], published, input, connection, null)).toThrow(
+      'MISSING_VALUE:address',
+    );
+    input.values.address = 'Second buyer required value';
+    const two = compileTemplate(native, [], published, input, connection, null);
+    expect(two.payload.recipients).toHaveLength(2);
+    expect((two.payload.recipients as Array<{ fields: unknown[] }>)[1].fields).toHaveLength(2);
+    assertTemplateVersion(native, published, ['a', 'b']);
+    input.recipients.shift();
+    expect(() => compileTemplate(native, [], published, input, connection, null)).toThrow(
+      'MISSING_RECIPIENT:buyer1',
+    );
+  });
+  it('restricts optional roles and shared company scopes to supported company packages', () => {
+    const optionalPart = {
+      ...part,
+      roles: part.roles.map((role, i) => ({ ...role, optional: i === 1 })),
+    };
+    const input = {
+      packageKey: 'qa',
+      version: 1,
+      title: 'QA',
+      scenario: 'buyer',
+      companyKey: 'realty',
+      applicableCompanyKeys: ['realty', 'living'],
+      parts: [optionalPart],
+    };
+    expect(publishInput.safeParse(input).success).toBe(true);
+    expect(publishInput.safeParse({ ...input, scenario: 'onboarding' }).success).toBe(false);
+    expect(publishInput.safeParse({ ...input, applicableCompanyKeys: ['living'] }).success).toBe(
+      false,
+    );
+    expect(
+      publishInput.safeParse({ ...input, applicableCompanyKeys: ['realty', 'realty'] }).success,
+    ).toBe(false);
+    for (const actor of ['owner', 'company'])
+      expect(
+        publishInput.safeParse({
+          ...input,
+          parts: [
+            {
+              ...optionalPart,
+              roles: [optionalPart.roles[0], { ...optionalPart.roles[1], actor }],
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    expect(
+      publishInput.safeParse({
+        ...input,
+        parts: [{ ...part, roles: part.roles.map((role) => ({ ...role, optional: true })) }],
+      }).success,
+    ).toBe(false);
+    expect(publishInput.safeParse({ ...input, parts: [optionalPart, part] }).success).toBe(false);
+    expect(
+      publishInput.safeParse({
+        ...input,
+        parts: [{ ...part, roles: [{ ...part.roles[0], actor: 'company' }, part.roles[1]] }],
+      }).success,
+    ).toBe(false);
+  });
   it('rejects ambiguous sequential ranks but permits fully parallel signing', () => {
     const native = document();
     native.recipients[1].signingOrder = native.recipients[0].signingOrder;

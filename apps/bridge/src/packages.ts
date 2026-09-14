@@ -133,7 +133,11 @@ export function compileTemplate(
   target: Connection,
   redirectUrl: string | null,
 ): PreparedPart {
-  const bindings = part.roles.map((role) => {
+  const activeRoles = part.roles.filter(
+    (role) => !role.optional || input.recipients.some((recipient) => recipient.key === role.key),
+  );
+  const activeRecipientIds = new Set(activeRoles.map((role) => role.templateRecipientId));
+  const bindings = activeRoles.map((role) => {
     const recipient = input.recipients.find((r) => r.key === role.key);
     const native = document.recipients.find((r) => r.id === role.templateRecipientId)!;
     if (!recipient) throw new BridgeError(`MISSING_RECIPIENT:${role.key}`, 400);
@@ -145,11 +149,17 @@ export function compileTemplate(
     throw new BridgeError('INDISTINGUISHABLE_RECIPIENT_ROLES', 400);
   for (const prefill of part.prefill)
     if (
+      activeRecipientIds.has(
+        document.fields.find((field) => field.id === prefill.templateFieldId)!.recipientId,
+      ) &&
       prefill.required &&
-      (input.values[prefill.key] === undefined || input.values[prefill.key] === '')
+      (input.values[prefill.key] === undefined ||
+        (typeof input.values[prefill.key] === 'string'
+          ? !(input.values[prefill.key] as string).trim()
+          : input.values[prefill.key].length === 0))
     )
       throw new BridgeError(`MISSING_VALUE:${prefill.key}`, 400);
-  const recipients = part.roles.map((role, index) => {
+  const recipients = activeRoles.map((role, index) => {
     const native = document.recipients.find((r) => r.id === role.templateRecipientId)!;
     return {
       email: bindings[index].email,

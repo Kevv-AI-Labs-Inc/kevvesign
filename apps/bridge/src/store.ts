@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS signing.packages (
  published_by INTEGER NOT NULL, retired_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  UNIQUE(client_id,package_key,version)
 );
+ALTER TABLE signing.packages ADD COLUMN IF NOT EXISTS applicable_company_keys TEXT[] NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS signing.requests (
  id UUID PRIMARY KEY, client_id TEXT NOT NULL, owner_agent_id INTEGER NOT NULL,
  idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, external_reference TEXT NOT NULL,

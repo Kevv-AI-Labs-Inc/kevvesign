@@ -72,6 +72,7 @@ export const templatePartInput = z
             templateRecipientId: z.number().int().positive(),
             actor: z.enum(['owner', 'company', 'customer']),
             label: z.string().min(1).max(100),
+            optional: z.boolean().optional(),
           })
           .strict(),
       )
@@ -99,13 +100,24 @@ export const publishInput = z
     scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller']),
     companyKey: key,
     selectors: z.record(key, z.string().max(200)).default({}),
+    applicableCompanyKeys: z.array(key).min(1).max(30).optional(),
     parts: z.array(templatePartInput).min(1).max(10),
   })
   .strict()
   .superRefine((value, ctx) => {
     const actors = new Map<string, string>();
+    const optionalRoles = new Map<string, boolean>();
     for (const [index, part] of value.parts.entries())
       for (const role of part.roles) {
+        if (
+          role.optional &&
+          (!['buyer', 'seller'].includes(value.scenario) || role.actor !== 'customer')
+        )
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Only customer package client roles may be optional',
+            path: ['parts', index, 'roles'],
+          });
         if (actors.has(role.key) && actors.get(role.key) !== role.actor)
           ctx.addIssue({
             code: 'custom',
@@ -113,7 +125,44 @@ export const publishInput = z
             path: ['parts', index, 'roles'],
           });
         actors.set(role.key, role.actor);
+        if (optionalRoles.has(role.key) && optionalRoles.get(role.key) !== Boolean(role.optional))
+          ctx.addIssue({
+            code: 'custom',
+            message: 'A role must have the same optionality across all parts',
+            path: ['parts', index, 'roles'],
+          });
+        optionalRoles.set(role.key, Boolean(role.optional));
       }
+    const roles = value.parts.flatMap((part) => part.roles);
+    if (
+      value.applicableCompanyKeys &&
+      (new Set(value.applicableCompanyKeys).size !== value.applicableCompanyKeys.length ||
+        !value.applicableCompanyKeys.includes(value.companyKey))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Company scope must be distinct and include the template owner',
+        path: ['applicableCompanyKeys'],
+      });
+    if (
+      (value.applicableCompanyKeys?.length || 0) > 1 &&
+      (!['buyer', 'seller'].includes(value.scenario) ||
+        roles.some((role) => role.actor === 'company'))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Shared packages support agent and client roles only',
+        path: ['applicableCompanyKeys'],
+      });
+    if (
+      roles.some((role) => role.optional) &&
+      !roles.some((role) => role.actor === 'customer' && !role.optional)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'An optional client requires a mandatory client',
+        path: ['parts'],
+      });
   });
 export type TemplatePart = z.infer<typeof templatePartInput>;
 export type PublishedPart = TemplatePart & {
@@ -129,6 +178,7 @@ export type PackageRow = {
   title: string;
   scenario: CreateInput['scenario'];
   company_key: string;
+  applicable_company_keys?: string[];
   selectors: Record<string, string>;
   definition: PublishedPart[];
   retired_at: Date | null;
