@@ -28,6 +28,8 @@ export const createInput = z
     title: z.string().trim().min(1).max(200),
     scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller', 'custom']),
     packageId: z.uuid().optional(),
+    predecessorRequestId: z.uuid().optional(),
+    reissueReason: z.string().trim().min(5).max(2000).optional(),
     companyKey: key,
     ownerAgentId: z.number().int().positive(),
     business: businessSchema.default({ customer: '', property: '', reference: '' }),
@@ -253,10 +255,14 @@ export function bindRecipients(document: NativeEnvelope, expected: RecipientBind
   });
 }
 
-export function assertNativeOwner(document: NativeEnvelope, connection: Connection) {
+export function assertNativeOwner(
+  document: NativeEnvelope,
+  connection: Connection,
+  expectedType: 'DOCUMENT' | 'TEMPLATE' = 'DOCUMENT',
+) {
   if (
     document.deletedAt ||
-    document.type !== 'DOCUMENT' ||
+    document.type !== expectedType ||
     document.teamId !== connection.team_id ||
     document.userId !== connection.native_user_id ||
     document.user.email.toLowerCase() !== connection.native_email ||

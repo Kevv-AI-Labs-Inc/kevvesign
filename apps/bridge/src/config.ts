@@ -42,5 +42,8 @@ export type Principal = {
   agentId: number;
   admin: boolean;
   verifiedEmails: string[];
+  // Fresh company grants asserted only by the authenticated Portal server.
+  // Optional for compatibility with existing HR callers; absent grants deny new customer work.
+  allowedCompanyKeys?: string[];
   portalOrigin: string;
 };
