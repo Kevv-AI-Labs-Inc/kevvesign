@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { importContext } from './import-context.js';
+import { assertNativePrefillPolicy } from './import-prefill-policy.js';
 import { canonical, sha256, type NativeEnvelope } from '../documenso.js';
 import { key } from '../model.js';
 
@@ -81,8 +82,7 @@ function verifyNativeFields(document: NativeEnvelope, input: ImportPackage) {
     if (matched.has(native.id))
       throw new Error(`Two source fields mapped to one native field: ${field.key}`);
     matched.add(native.id);
-    if (field.mergeKey && native.fieldMeta?.readOnly !== true)
-      throw new Error(`Native business field must be readonly: ${field.key}`);
+    assertNativePrefillPolicy(field, native, input);
     // Upstream may supply extra defaults; every explicit approved setting must survive import.
     for (const [key, value] of Object.entries(field.native.fieldMeta))
       if (canonical(native.fieldMeta?.[key]) !== canonical(value))
