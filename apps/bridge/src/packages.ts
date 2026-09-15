@@ -287,3 +287,82 @@ export function assertHrDraft(document: NativeEnvelope, snapshot: Record<string,
     });
   if (!valid) throw new BridgeError('HR_DRAFT_CHANGED', 409);
 }
+
+// One native envelope, independent PDF items. Roles are unified by the reviewed
+// business key, never by email or by native template recipient IDs.
+export function composePreparedParts(
+  parts: PreparedPart[],
+  title: string,
+  signingOrder: 'PARALLEL' | 'SEQUENTIAL',
+): PreparedPart {
+  if (!parts.length) throw new BridgeError('EMPTY_PACKAGE', 400);
+  type Recipient = {
+    email: string;
+    name: string;
+    role: string;
+    signingOrder?: number;
+    fields: Array<Record<string, unknown> & { identifier: number }>;
+  };
+  const bindings: PreparedPart['bindings'] = [];
+  const recipients: Recipient[] = [];
+  const files: PreparedPart['files'] = [];
+  for (const part of parts) {
+    if (part.connection.id !== parts[0].connection.id)
+      throw new BridgeError('PACKAGE_COMPANY_MISMATCH', 409);
+    const offset = files.length;
+    const native = part.payload.recipients as Recipient[];
+    part.bindings.forEach((binding, index) => {
+      if (!['SIGNER', 'APPROVER'].includes(binding.role))
+        throw new BridgeError('PACKAGE_ROLE_NOT_SUPPORTED', 400);
+      const fields = native[index].fields.map((field) => ({
+        ...field,
+        identifier: field.identifier + offset,
+      }));
+      const found = bindings.findIndex((b) => b.key === binding.key);
+      if (found < 0) {
+        bindings.push({ ...binding });
+        recipients.push({ ...native[index], fields });
+      } else {
+        const previous = bindings[found];
+        if (
+          previous.actor !== binding.actor ||
+          previous.email !== binding.email ||
+          previous.name !== binding.name
+        )
+          throw new BridgeError('PACKAGE_ROLE_MISMATCH', 400);
+        // The same agent can acknowledge a disclosure and sign an agreement.
+        // Their signature duty wins; no approval or signature is fabricated.
+        if (binding.role === 'SIGNER') previous.role = 'SIGNER';
+        recipients[found].role = previous.role;
+        recipients[found].fields.push(...fields);
+      }
+    });
+    files.push(...part.files);
+  }
+  if (new Set(bindings.map((r) => `${r.email}:${r.role}:${r.name}`)).size !== bindings.length)
+    throw new BridgeError('INDISTINGUISHABLE_RECIPIENT_ROLES', 400);
+  if (
+    files.length > 10 ||
+    files.reduce((size, file) => size + file.bytes.length, 0) > 100 * 1024 * 1024
+  )
+    throw new BridgeError('PACKAGE_TOO_LARGE', 413);
+  recipients.forEach((recipient, index) => {
+    if (signingOrder === 'SEQUENTIAL') recipient.signingOrder = index + 1;
+    else delete recipient.signingOrder;
+  });
+  return {
+    connection: parts[0].connection,
+    files,
+    bindings,
+    payload: {
+      ...parts[0].payload,
+      title,
+      recipients,
+      meta: {
+        ...(parts[0].payload.meta as Record<string, unknown>),
+        signingOrder,
+        allowDictateNextSigner: false,
+      },
+    },
+  };
+}

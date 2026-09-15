@@ -7,8 +7,8 @@ export function packageCompanyKeys(
   return item.applicable_company_keys?.length ? item.applicable_company_keys : [item.company_key];
 }
 
-export const isCustomerPackage = (scenario: string) =>
-  scenario === 'buyer' || scenario === 'seller' || scenario === 'commercial';
+export const isCompanyPackage = (scenario: string) =>
+  ['buyer', 'seller', 'commercial', 'company_file'].includes(scenario);
 export const isHr = (scenario: string) => scenario === 'onboarding' || scenario === 'team_leader';
 
 export function assertCompanyAccess(principal: Principal, companyKey: string) {
@@ -22,5 +22,5 @@ export function assertNewSigningScenario(
   companyKey: string,
 ) {
   if (scenario === 'custom') throw new BridgeError('PERSONAL_SIGNING_UNAVAILABLE', 403);
-  if (isCustomerPackage(scenario)) assertCompanyAccess(principal, companyKey);
+  if (isCompanyPackage(scenario)) assertCompanyAccess(principal, companyKey);
 }

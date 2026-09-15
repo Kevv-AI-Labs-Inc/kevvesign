@@ -11,6 +11,7 @@ import {
   BridgeError,
   createInput,
   publishInput,
+  composeInput,
   email,
   key,
   assertNativeOwner,
@@ -27,11 +28,17 @@ import type {
   CreateInput,
   PublishedPart,
 } from './model.js';
-import { readTemplate, compileTemplate, assertTemplateVersion, assertHrDraft } from './packages.js';
+import {
+  readTemplate,
+  compileTemplate,
+  composePreparedParts,
+  assertTemplateVersion,
+  assertHrDraft,
+} from './packages.js';
 import {
   assertCompanyAccess,
   assertNewSigningScenario,
-  isCustomerPackage,
+  isCompanyPackage,
   packageCompanyKeys,
 } from './policy.js';
 
@@ -237,7 +244,7 @@ export class SigningService {
     );
     return items.filter(
       (item) =>
-        !isCustomerPackage(item.scenario) ||
+        !isCompanyPackage(item.scenario) ||
         principal.admin ||
         packageCompanyKeys(item).some((company) => principal.allowedCompanyKeys?.includes(company)),
     );
@@ -406,7 +413,7 @@ export class SigningService {
   async publish(principal: Principal, raw: unknown) {
     this.admin(principal);
     const input = publishInput.parse(raw);
-    if (isCustomerPackage(input.scenario) && input.parts.length !== 1)
+    if (isCompanyPackage(input.scenario) && input.parts.length !== 1)
       throw new BridgeError('STANDARD_PACKAGE_SINGLE_ENVELOPE', 400);
     const [connection] = await this.store.query<Connection>(
       "SELECT * FROM signing.connections WHERE client_id=$1 AND scope='company' AND company_key=$2 AND revoked_at IS NULL",
@@ -424,6 +431,13 @@ export class SigningService {
     const sharedFieldFormats = new Map<string, string>();
     for (const part of input.parts) {
       const { document, files } = await readTemplate(this.provider(connection), part, connection);
+      if (input.catalogKind === 'document' && document.envelopeItems.length !== 1)
+        throw new BridgeError('INDEPENDENT_DOCUMENT_REQUIRED', 400);
+      if (
+        input.scenario === 'company_file' &&
+        document.recipients.some((r) => !['SIGNER', 'APPROVER'].includes(r.role))
+      )
+        throw new BridgeError('COMPANY_FILE_REQUIRES_SIGNER_OR_APPROVER', 400);
       if (
         ['onboarding', 'team_leader'].includes(input.scenario) &&
         (!part.roles.some((r) => r.actor === 'owner') ||
@@ -466,7 +480,7 @@ export class SigningService {
     const id = randomUUID();
     await this.store.transaction(async (tx) => {
       await tx.query(
-        'INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by,applicable_company_keys) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        'INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by,applicable_company_keys,catalog_kind) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
         [
           id,
           principal.clientId,
@@ -479,6 +493,7 @@ export class SigningService {
           JSON.stringify(definition),
           principal.agentId,
           applicableCompanies,
+          input.catalogKind,
         ],
       );
       await tx.query(
@@ -492,6 +507,130 @@ export class SigningService {
       );
     });
     return { id, ...input, parts: definition };
+  }
+  async composePackage(principal: Principal, raw: unknown) {
+    this.admin(principal);
+    const input = composeInput.parse(raw);
+    const documents = await this.store.query<PackageRow>(
+      'SELECT * FROM signing.packages WHERE client_id=$1 AND id=ANY($2::uuid[])',
+      [principal.clientId, input.documentIds],
+    );
+    const ordered = input.documentIds.map((id) => documents.find((d) => d.id === id));
+    const companies = input.applicableCompanyKeys || [input.companyKey];
+    if (
+      ordered.some(
+        (d) =>
+          !d ||
+          d.retired_at ||
+          d.catalog_kind !== 'document' ||
+          d.scenario !== input.scenario ||
+          d.company_key !== input.companyKey ||
+          companies.some((company) => !packageCompanyKeys(d).includes(company)),
+      )
+    )
+      throw new BridgeError('APPROVED_DOCUMENT_NOT_AVAILABLE', 409);
+    const sources = ordered as PackageRow[];
+    const definition = sources.flatMap((d) => d.definition);
+    // Reuse cross-document actor, optionality and company validation.
+    publishInput.parse({
+      packageKey: input.packageKey,
+      version: input.version,
+      title: input.title,
+      scenario: input.scenario,
+      companyKey: input.companyKey,
+      applicableCompanyKeys: companies,
+      parts: definition.map(({ title, templateId, roles, prefill }) => ({
+        title,
+        templateId,
+        roles,
+        prefill: prefill.map(({ key, templateFieldId, required, label }) => ({
+          key,
+          templateFieldId,
+          required,
+          label,
+        })),
+      })),
+    });
+    const formats = new Map<string, string>();
+    for (const part of definition) {
+      const connection = await this.connection(part.connectionId, principal.clientId);
+      const { document, files } = await readTemplate(this.provider(connection), part, connection);
+      assertTemplateVersion(
+        document,
+        part,
+        files.map((file) => sha256(file.bytes)),
+      );
+      if (
+        document.envelopeItems.length !== 1 ||
+        document.recipients.some((r) => !['SIGNER', 'APPROVER'].includes(r.role))
+      )
+        throw new BridgeError('PACKAGE_ROLE_NOT_SUPPORTED', 400);
+      for (const prefill of part.prefill) {
+        const field = document.fields.find((f) => f.id === prefill.templateFieldId)!;
+        const format = canonical({
+          type: field.type,
+          options: Array.isArray(field.fieldMeta?.values)
+            ? (field.fieldMeta.values as Array<{ value: string }>).map((v) => v.value)
+            : [],
+        });
+        if (formats.has(prefill.key) && formats.get(prefill.key) !== format)
+          throw new BridgeError('SHARED_PREFILL_FORMAT_MISMATCH', 400);
+        formats.set(prefill.key, format);
+      }
+    }
+    const id = randomUUID();
+    const components = sources.map((d) => ({
+      id: d.id,
+      key: d.package_key,
+      version: d.version,
+      title: d.title,
+    }));
+    await this.store.transaction(async (tx) => {
+      // Retirement and publication serialize on the referenced versions.
+      const active = await tx.query(
+        'SELECT id FROM signing.packages WHERE client_id=$1 AND id=ANY($2::uuid[]) AND retired_at IS NULL FOR SHARE',
+        [principal.clientId, input.documentIds],
+      );
+      if (active.rowCount !== input.documentIds.length)
+        throw new BridgeError('APPROVED_DOCUMENT_NOT_AVAILABLE', 409);
+      await tx.query(
+        "INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by,applicable_company_keys,catalog_kind,components,signing_order) VALUES($1,$2,$3,$4,$5,$6,$7,'{}',$8,$9,$10,'package',$11,$12)",
+        [
+          id,
+          principal.clientId,
+          input.packageKey,
+          input.version,
+          input.title,
+          input.scenario,
+          input.companyKey,
+          JSON.stringify(definition),
+          principal.agentId,
+          companies,
+          JSON.stringify(components),
+          input.signingOrder,
+        ],
+      );
+      await tx.query(
+        'INSERT INTO signing.events(client_id,actor_agent_id,event,detail) VALUES($1,$2,$3,$4)',
+        [
+          principal.clientId,
+          principal.agentId,
+          'package.composed',
+          { packageId: id, components, signingOrder: input.signingOrder },
+        ],
+      );
+    });
+    return { id, components };
+  }
+  async assertPackageComponents(principal: Principal, row: PackageRow) {
+    if (row.catalog_kind !== 'package') return;
+    const ids = (row.components || []).map((c) => c.id);
+    const active = await this.store.query(
+      'SELECT id FROM signing.packages WHERE client_id=$1 AND id=ANY($2::uuid[]) AND retired_at IS NULL',
+      [principal.clientId, ids],
+    );
+    if (!ids.length || active.length !== ids.length)
+      throw new BridgeError('APPROVED_DOCUMENT_NOT_AVAILABLE', 409);
   }
   async retirePackage(principal: Principal, id: string) {
     this.admin(principal);
@@ -512,9 +651,10 @@ export class SigningService {
     const target = await this.targetConnection(principal, input);
     // Customer recipients stay on the native completion/download page, which
     // does not require an agent's Portal session.
-    const redirectUrl = isCustomerPackage(input.scenario)
-      ? null
-      : `${principal.portalOrigin}${input.scenario === 'onboarding' ? '/pending' : input.scenario === 'team_leader' ? '/team-workspace' : `/signing/${requestId}`}`;
+    const redirectUrl =
+      isCompanyPackage(input.scenario) && input.scenario !== 'company_file'
+        ? null
+        : `${principal.portalOrigin}${input.scenario === 'onboarding' ? '/pending' : input.scenario === 'team_leader' ? '/team-workspace' : `/signing/${requestId}`}`;
     if (input.scenario === 'custom') {
       if (!files.length || files.length > 10) throw new BridgeError('UPLOAD_PDF_FILES', 400);
       if (
@@ -561,6 +701,7 @@ export class SigningService {
       !packageCompanyKeys(packageRow).includes(input.companyKey)
     )
       throw new BridgeError('PACKAGE_NOT_AVAILABLE', 409);
+    await this.assertPackageComponents(principal, packageRow);
     const roleKeys = new Set(packageRow.definition.flatMap((p) => p.roles.map((r) => r.key)));
     if (input.recipients.some((r) => !roleKeys.has(r.key)))
       throw new BridgeError('UNEXPECTED_RECIPIENT', 400);
@@ -571,7 +712,7 @@ export class SigningService {
         source.scope !== 'company' ||
         source.company_key !== packageRow.company_key ||
         (source.id !== target.id &&
-          (!isCustomerPackage(input.scenario) ||
+          (!isCompanyPackage(input.scenario) ||
             !packageCompanyKeys(packageRow).includes(target.company_key!)))
       )
         throw new BridgeError('PACKAGE_COMPANY_MISMATCH', 409);
@@ -597,7 +738,9 @@ export class SigningService {
       }
       parts.push(compileTemplate(document, templateFiles, part, input, target, redirectUrl));
     }
-    return parts;
+    return packageRow.catalog_kind === 'package'
+      ? [composePreparedParts(parts, input.title, packageRow.signing_order || 'PARALLEL')]
+      : parts;
   }
   async preview(principal: Principal, raw: unknown) {
     const input = createInput.parse(raw);
@@ -637,7 +780,7 @@ export class SigningService {
       return this.detail(principal, existing.id);
     }
     if (input.predecessorRequestId) {
-      if (!isCustomerPackage(input.scenario) || !input.reissueReason)
+      if (!isCompanyPackage(input.scenario) || !input.reissueReason)
         throw new BridgeError('REISSUE_REASON_REQUIRED', 400);
       const previous = await this.reissueSeed(principal, input.predecessorRequestId);
       if (previous.companyKey !== input.companyKey || previous.scenario !== input.scenario)
@@ -1052,7 +1195,7 @@ export class SigningService {
     reviewHash?: string,
   ) {
     const request = await this.request(principal, id);
-    if (isCustomerPackage(request.scenario))
+    if (isCompanyPackage(request.scenario))
       assertCompanyAccess(principal, request.input_snapshot.companyKey);
     const hr = ['onboarding', 'team_leader'].includes(request.scenario);
     if (
@@ -1099,17 +1242,21 @@ export class SigningService {
           if (document.status !== 'DRAFT') throw new BridgeError('DOCUMENT_CANNOT_BE_SENT', 409);
           // A failed first sync can leave the cached projection null or stale.
           // Gate the actual native draft, never the cached status, before sending.
-          if (isCustomerPackage(request.scenario) && reviewHash !== this.reviewHash(request, parts))
+          if (isCompanyPackage(request.scenario) && reviewHash !== this.reviewHash(request, parts))
             throw new BridgeError('REVIEW_REQUIRED', 409);
           if (part.delivery_state !== 'idle') throw new BridgeError('SEND_OUTCOME_UNKNOWN', 409);
-          if (hr || isCustomerPackage(request.scenario)) {
+          if (hr || isCompanyPackage(request.scenario)) {
             assertHrDraft(document, part.snapshot);
             const [published] = await this.store.query<PackageRow>(
               'SELECT p.* FROM signing.packages p JOIN signing.requests r ON r.package_id=p.id WHERE r.id=$1',
               [request.id],
             );
-            const expectedFiles = published?.definition[part.part_index]?.files;
-            if (isCustomerPackage(request.scenario) && published?.retired_at)
+            const expectedFiles =
+              published?.catalog_kind === 'package'
+                ? published.definition.flatMap((p) => p.files)
+                : published?.definition[part.part_index]?.files;
+            if (published) await this.assertPackageComponents(principal, published);
+            if (isCompanyPackage(request.scenario) && published?.retired_at)
               throw new BridgeError('PACKAGE_RETIRED', 409);
             if (!expectedFiles || expectedFiles.length !== document.envelopeItems.length)
               throw new BridgeError('HR_DRAFT_CHANGED', 409);
@@ -1219,7 +1366,7 @@ export class SigningService {
   ) {
     const request = await this.request(principal, requestId);
     if (kind === 'editor') throw new BridgeError('PERSONAL_SIGNING_UNAVAILABLE', 403);
-    if (isCustomerPackage(request.scenario))
+    if (isCompanyPackage(request.scenario))
       assertCompanyAccess(principal, request.input_snapshot.companyKey);
     const [part] = await this.store.query<PartRow>(
       'SELECT * FROM signing.request_parts WHERE id=$1 AND request_id=$2',
@@ -1243,7 +1390,7 @@ export class SigningService {
         throw new BridgeError('SIGNER_ACCESS_DENIED', 403);
       if (recipient.expiresAt && Date.parse(recipient.expiresAt) <= Date.now())
         throw new BridgeError('SIGNING_LINK_EXPIRED', 409);
-      if (connection.scope === 'company' || isCustomerPackage(request.scenario)) {
+      if (connection.scope === 'company' || isCompanyPackage(request.scenario)) {
         const binding = bindings.find((b) => b.nativeId === recipient.id);
         if (
           !binding ||
@@ -1289,7 +1436,7 @@ export class SigningService {
   }
   async review(principal: Principal, id: string) {
     const request = await this.request(principal, id);
-    if (!isCustomerPackage(request.scenario))
+    if (!isCompanyPackage(request.scenario))
       throw new BridgeError('STANDARD_PACKAGE_REQUIRED', 400);
     assertCompanyAccess(principal, request.input_snapshot.companyKey);
     return this.readLease(id, async () => {
@@ -1318,7 +1465,7 @@ export class SigningService {
   }
   async reissueSeed(principal: Principal, id: string) {
     const request = await this.request(principal, id);
-    if (!isCustomerPackage(request.scenario))
+    if (!isCompanyPackage(request.scenario))
       throw new BridgeError('STANDARD_PACKAGE_REQUIRED', 400);
     assertCompanyAccess(principal, request.input_snapshot.companyKey);
     await this.processRequest(id, principal.clientId);
@@ -1375,8 +1522,28 @@ export class SigningService {
         for (const kind of ['certificate', 'audit-log'] as const)
           add(`${folder}/${kind}.pdf`, await provider.certificate(document.id, kind));
       }
+      const [published] = await this.store.query<PackageRow>(
+        'SELECT * FROM signing.packages WHERE id=$1 AND client_id=$2',
+        [request.input_snapshot.packageId, principal.clientId],
+      );
       entries['manifest.json'] = strToU8(
-        JSON.stringify({ requestId: id, title: request.title, files: manifest }, null, 2),
+        JSON.stringify(
+          {
+            requestId: id,
+            title: request.title,
+            companyKey: request.input_snapshot.companyKey,
+            ownerAgentId: request.owner_agent_id,
+            scenario: request.scenario,
+            business: request.business,
+            packageId: request.input_snapshot.packageId,
+            packageKey: published?.package_key,
+            packageVersion: published?.version,
+            documents: published?.components || [],
+            files: manifest,
+          },
+          null,
+          2,
+        ),
       );
       return {
         name: `${safeFilename(request.title)}.zip`,
