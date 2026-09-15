@@ -8,7 +8,7 @@ export function packageCompanyKeys(
 }
 
 export const isCustomerPackage = (scenario: string) =>
-  scenario === 'buyer' || scenario === 'seller';
+  scenario === 'buyer' || scenario === 'seller' || scenario === 'commercial';
 export const isHr = (scenario: string) => scenario === 'onboarding' || scenario === 'team_leader';
 
 export function assertCompanyAccess(principal: Principal, companyKey: string) {

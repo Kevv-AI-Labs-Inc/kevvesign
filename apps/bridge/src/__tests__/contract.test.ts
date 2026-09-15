@@ -185,6 +185,8 @@ describe('native mapping and published packages', () => {
       parts: [optionalPart],
     };
     expect(publishInput.safeParse(input).success).toBe(true);
+    expect(publishInput.safeParse({ ...input, scenario: 'seller' }).success).toBe(true);
+    expect(publishInput.safeParse({ ...input, scenario: 'commercial' }).success).toBe(true);
     expect(publishInput.safeParse({ ...input, scenario: 'onboarding' }).success).toBe(false);
     expect(publishInput.safeParse({ ...input, applicableCompanyKeys: ['living'] }).success).toBe(
       false,

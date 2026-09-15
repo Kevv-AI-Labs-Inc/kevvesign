@@ -44,6 +44,8 @@ const admin: Principal = {
   portalOrigin: 'http://localhost:3000',
   allowedCompanyKeys: keys,
 };
+const scenario = process.env.SIGNING_QA_SCENARIO || 'buyer';
+assert(['buyer', 'seller', 'commercial'].includes(scenario));
 const run = randomUUID();
 const proof = await PDFDocument.create();
 const page = proof.addPage([612, 792]);
@@ -139,7 +141,7 @@ try {
     packageKey: `shared-buyer-${run}`,
     version: 1,
     title: 'Synthetic shared buyer package',
-    scenario: 'buyer',
+    scenario,
     companyKey: keys[0],
     applicableCompanyKeys: keys,
     parts: [
@@ -173,7 +175,7 @@ try {
         idempotencyKey: randomUUID(),
         externalReference: randomUUID(),
         title: `Synthetic shared ${companyKey} ${count}`,
-        scenario: 'buyer',
+        scenario,
         companyKey,
         packageId: published.id,
         ownerAgentId: agent.agentId,
@@ -252,7 +254,7 @@ try {
         status: doc.status,
       });
       console.log(
-        `PASS shared master: ${companyKey}, ${count} buyers, agent + clients complete and archive`,
+        `PASS shared ${scenario} master: ${companyKey}, ${count} buyers, agent + clients complete and archive`,
       );
     }
   assert.equal(
@@ -261,7 +263,7 @@ try {
     'Master remains unchanged',
   );
   await writeFile(
-    '/private/tmp/homix-documenso-integration/shared-buyer-run.json',
+    `/private/tmp/homix-documenso-integration/shared-${scenario}-run.json`,
     JSON.stringify({ packageId: published.id, results }, null, 2),
   );
 } finally {
