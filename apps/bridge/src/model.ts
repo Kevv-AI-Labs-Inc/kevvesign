@@ -26,7 +26,7 @@ export const createInput = z
     idempotencyKey: key,
     externalReference: key,
     title: z.string().trim().min(1).max(200),
-    scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller', 'custom']),
+    scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller', 'commercial', 'custom']),
     packageId: z.uuid().optional(),
     predecessorRequestId: z.uuid().optional(),
     reissueReason: z.string().trim().min(5).max(2000).optional(),
@@ -97,7 +97,7 @@ export const publishInput = z
     packageKey: key,
     version: z.number().int().positive().max(2147483647),
     title: z.string().trim().min(1).max(200),
-    scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller']),
+    scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller', 'commercial']),
     companyKey: key,
     selectors: z.record(key, z.string().max(200)).default({}),
     applicableCompanyKeys: z.array(key).min(1).max(30).optional(),
@@ -111,7 +111,7 @@ export const publishInput = z
       for (const role of part.roles) {
         if (
           role.optional &&
-          (!['buyer', 'seller'].includes(value.scenario) || role.actor !== 'customer')
+          (!['buyer', 'seller', 'commercial'].includes(value.scenario) || role.actor !== 'customer')
         )
           ctx.addIssue({
             code: 'custom',
@@ -146,7 +146,7 @@ export const publishInput = z
       });
     if (
       (value.applicableCompanyKeys?.length || 0) > 1 &&
-      (!['buyer', 'seller'].includes(value.scenario) ||
+      (!['buyer', 'seller', 'commercial'].includes(value.scenario) ||
         roles.some((role) => role.actor === 'company'))
     )
       ctx.addIssue({

@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS signing.template_uploads (
 );
 CREATE TABLE IF NOT EXISTS signing.packages (
  id UUID PRIMARY KEY, client_id TEXT NOT NULL, package_key TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0),
- title TEXT NOT NULL, scenario TEXT NOT NULL CHECK(scenario IN ('onboarding','team_leader','buyer','seller')),
+ title TEXT NOT NULL, scenario TEXT NOT NULL CHECK(scenario IN ('onboarding','team_leader','buyer','seller','commercial')),
  company_key TEXT NOT NULL, selectors JSONB NOT NULL DEFAULT '{}', definition JSONB NOT NULL,
  published_by INTEGER NOT NULL, retired_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  UNIQUE(client_id,package_key,version)
@@ -86,12 +86,24 @@ ALTER TABLE signing.packages ADD COLUMN IF NOT EXISTS applicable_company_keys TE
 CREATE TABLE IF NOT EXISTS signing.requests (
  id UUID PRIMARY KEY, client_id TEXT NOT NULL, owner_agent_id INTEGER NOT NULL,
  idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, external_reference TEXT NOT NULL,
- scenario TEXT NOT NULL CHECK(scenario IN ('onboarding','team_leader','buyer','seller','custom')),
+ scenario TEXT NOT NULL CHECK(scenario IN ('onboarding','team_leader','buyer','seller','commercial','custom')),
  package_id UUID REFERENCES signing.packages(id) ON DELETE RESTRICT,
  title TEXT NOT NULL, business JSONB NOT NULL, input_snapshot JSONB NOT NULL,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  UNIQUE(client_id,owner_agent_id,idempotency_key), UNIQUE(client_id,external_reference)
 );
+-- Upgrade existing installations as well as fresh databases. Existing rows remain valid.
+DO $$
+BEGIN
+ IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='signing.packages'::regclass AND conname='packages_scenario_check' AND position('commercial' in pg_get_constraintdef(oid))=0) THEN
+  ALTER TABLE signing.packages DROP CONSTRAINT packages_scenario_check;
+  ALTER TABLE signing.packages ADD CONSTRAINT packages_scenario_check CHECK(scenario IN ('onboarding','team_leader','buyer','seller','commercial'));
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='signing.requests'::regclass AND conname='requests_scenario_check' AND position('commercial' in pg_get_constraintdef(oid))=0) THEN
+  ALTER TABLE signing.requests DROP CONSTRAINT requests_scenario_check;
+  ALTER TABLE signing.requests ADD CONSTRAINT requests_scenario_check CHECK(scenario IN ('onboarding','team_leader','buyer','seller','commercial','custom'));
+ END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS signing.request_parts (
  id UUID PRIMARY KEY, request_id UUID NOT NULL REFERENCES signing.requests(id) ON DELETE RESTRICT,
  part_index INTEGER NOT NULL, connection_id UUID NOT NULL REFERENCES signing.connections(id) ON DELETE RESTRICT,
