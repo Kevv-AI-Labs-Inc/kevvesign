@@ -26,7 +26,15 @@ export const createInput = z
     idempotencyKey: key,
     externalReference: key,
     title: z.string().trim().min(1).max(200),
-    scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller', 'commercial', 'custom']),
+    scenario: z.enum([
+      'onboarding',
+      'team_leader',
+      'buyer',
+      'seller',
+      'commercial',
+      'company_file',
+      'custom',
+    ]),
     packageId: z.uuid().optional(),
     predecessorRequestId: z.uuid().optional(),
     reissueReason: z.string().trim().min(5).max(2000).optional(),
@@ -94,10 +102,19 @@ export const templatePartInput = z
   .strict();
 export const publishInput = z
   .object({
+    catalogKind: z.enum(['legacy', 'document']).default('legacy'),
+    reviewed: z.boolean().optional(),
     packageKey: key,
     version: z.number().int().positive().max(2147483647),
     title: z.string().trim().min(1).max(200),
-    scenario: z.enum(['onboarding', 'team_leader', 'buyer', 'seller', 'commercial']),
+    scenario: z.enum([
+      'onboarding',
+      'team_leader',
+      'buyer',
+      'seller',
+      'commercial',
+      'company_file',
+    ]),
     companyKey: key,
     selectors: z.record(key, z.string().max(200)).default({}),
     applicableCompanyKeys: z.array(key).min(1).max(30).optional(),
@@ -105,6 +122,12 @@ export const publishInput = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.catalogKind === 'document' && (!value.reviewed || value.parts.length !== 1))
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Review exactly one independent document before approval',
+        path: ['parts'],
+      });
     const actors = new Map<string, string>();
     const optionalRoles = new Map<string, boolean>();
     for (const [index, part] of value.parts.entries())
@@ -135,6 +158,16 @@ export const publishInput = z
       }
     const roles = value.parts.flatMap((part) => part.roles);
     if (
+      value.scenario === 'company_file' &&
+      (roles.some((role) => role.actor !== 'owner' || role.optional) ||
+        new Set(roles.map((role) => role.key)).size !== 1)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Company files allow only the initiating agent, never customer recipients',
+        path: ['parts'],
+      });
+    if (
       value.applicableCompanyKeys &&
       (new Set(value.applicableCompanyKeys).size !== value.applicableCompanyKeys.length ||
         !value.applicableCompanyKeys.includes(value.companyKey))
@@ -146,7 +179,7 @@ export const publishInput = z
       });
     if (
       (value.applicableCompanyKeys?.length || 0) > 1 &&
-      (!['buyer', 'seller', 'commercial'].includes(value.scenario) ||
+      (!['buyer', 'seller', 'commercial', 'company_file'].includes(value.scenario) ||
         roles.some((role) => role.actor === 'company'))
     )
       ctx.addIssue({
@@ -164,6 +197,21 @@ export const publishInput = z
         path: ['parts'],
       });
   });
+export const composeInput = z
+  .object({
+    packageKey: key,
+    version: z.number().int().positive().max(2147483647),
+    title: z.string().trim().min(1).max(200),
+    scenario: z.enum(['buyer', 'seller', 'commercial', 'company_file']),
+    companyKey: key,
+    applicableCompanyKeys: z.array(key).min(1).max(30).optional(),
+    documentIds: z.array(z.uuid()).min(1).max(10),
+    signingOrder: z.enum(['PARALLEL', 'SEQUENTIAL']).default('PARALLEL'),
+    reviewed: z.literal(true),
+  })
+  .strict()
+  .refine((v) => new Set(v.documentIds).size === v.documentIds.length, 'Duplicate document');
+export type PackageComponent = { id: string; key: string; version: number; title: string };
 export type TemplatePart = z.infer<typeof templatePartInput>;
 export type PublishedPart = TemplatePart & {
   fingerprint: string;
@@ -181,6 +229,9 @@ export type PackageRow = {
   applicable_company_keys?: string[];
   selectors: Record<string, string>;
   definition: PublishedPart[];
+  catalog_kind?: 'legacy' | 'document' | 'package';
+  components?: PackageComponent[];
+  signing_order?: 'PARALLEL' | 'SEQUENTIAL';
   retired_at: Date | null;
 };
 export type Connection = {
@@ -282,7 +333,20 @@ export function projectEnvelope(
           Date.parse(r.expiresAt) <= now,
       ),
     recipients,
-    files: document.envelopeItems.map(({ id, title, order }) => ({ id, title, order })),
+    files: document.envelopeItems.map(({ id, title, order }) => {
+      const fields = document.fields.filter(
+        (f) => f.envelopeItemId === id && f.fieldMeta?.readOnly !== true,
+      );
+      const required = fields.filter((f) => f.fieldMeta?.required !== false);
+      return {
+        id,
+        title,
+        order,
+        requiredFields: required.length,
+        completedFields: required.filter((f) => f.inserted).length,
+        status: document.status === 'COMPLETED' ? 'COMPLETED' : document.status,
+      };
+    }),
     completionFilesReady: document.status === 'COMPLETED',
   };
 }

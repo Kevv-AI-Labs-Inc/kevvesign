@@ -214,6 +214,9 @@ export async function buildServer(config: BridgeConfig, service: SigningService)
   app.post('/v1/packages', async (request, reply) =>
     reply.code(201).send(await service.publish(request.principal, request.body)),
   );
+  app.post('/v1/packages/compose', async (request, reply) =>
+    reply.code(201).send(await service.composePackage(request.principal!, request.body)),
+  );
   app.post('/v1/packages/:id/retire', async (request) => {
     await service.retirePackage(request.principal, idParams.parse(request.params).id);
     return { ok: true };
