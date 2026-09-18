@@ -249,6 +249,41 @@ export class SigningService {
         packageCompanyKeys(item).some((company) => principal.allowedCompanyKeys?.includes(company)),
     );
   }
+  async packageFile(principal: Principal, id: string, partIndex: number, fileIndex: number) {
+    const [row] = await this.store.query<PackageRow>(
+      'SELECT * FROM signing.packages WHERE id=$1 AND client_id=$2 AND retired_at IS NULL',
+      [id, principal.clientId],
+    );
+    // Browse published company documents only. This does not grant access to
+    // arbitrary native templates, HR agreements or anybody's signing requests.
+    if (
+      !row ||
+      !isCompanyPackage(row.scenario) ||
+      (!principal.admin &&
+        !packageCompanyKeys(row).some((company) => principal.allowedCompanyKeys?.includes(company)))
+    )
+      throw new BridgeError('NOT_FOUND', 404);
+    if (
+      !Number.isSafeInteger(partIndex) ||
+      partIndex < 0 ||
+      !Number.isSafeInteger(fileIndex) ||
+      fileIndex < 0 ||
+      !row.definition[partIndex]?.files[fileIndex]
+    )
+      throw new BridgeError('NOT_FOUND', 404);
+    await this.assertPackageComponents(principal, row);
+    const part = row.definition[partIndex];
+    const connection = await this.connection(part.connectionId, principal.clientId);
+    if (connection.scope !== 'company' || connection.company_key !== row.company_key)
+      throw new BridgeError('PACKAGE_COMPANY_MISMATCH', 409);
+    const { document, files } = await readTemplate(this.provider(connection), part, connection);
+    assertTemplateVersion(
+      document,
+      part,
+      files.map((file) => sha256(file.bytes)),
+    );
+    return files[fileIndex];
+  }
   async templates(principal: Principal, connectionId: string, templateId?: string, page = 1) {
     this.admin(principal);
     const connection = await this.connection(connectionId, principal.clientId);

@@ -211,6 +211,22 @@ export async function buildServer(config: BridgeConfig, service: SigningService)
   app.get('/v1/packages', async (request) => ({
     items: await service.packages(request.principal),
   }));
+  app.get('/v1/packages/:id/files', async (request, reply) => {
+    const { id } = idParams.parse(request.params);
+    const { partIndex, fileIndex } = z
+      .object({
+        partIndex: z.coerce.number().int().min(0).max(100),
+        fileIndex: z.coerce.number().int().min(0).max(100),
+      })
+      .strict()
+      .parse(request.query);
+    const file = await service.packageFile(request.principal, id, partIndex, fileIndex);
+    return reply
+      .type('application/pdf')
+      .header('Content-Disposition', attachmentDisposition(file.name))
+      .header('Cache-Control', 'private, no-store')
+      .send(file.bytes);
+  });
   app.post('/v1/packages', async (request, reply) =>
     reply.code(201).send(await service.publish(request.principal, request.body)),
   );
