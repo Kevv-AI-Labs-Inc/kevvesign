@@ -29,6 +29,7 @@ export const createInput = z
     scenario: z.enum([
       'onboarding',
       'team_leader',
+      'offboarding',
       'buyer',
       'seller',
       'commercial',
@@ -110,6 +111,7 @@ export const publishInput = z
     scenario: z.enum([
       'onboarding',
       'team_leader',
+      'offboarding',
       'buyer',
       'seller',
       'commercial',

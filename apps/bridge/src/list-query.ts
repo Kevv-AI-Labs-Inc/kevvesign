@@ -21,7 +21,7 @@ WITH visible AS (
  ) THEN 'mine' ELSE 'waiting' END AS category
  FROM signing.requests r
  WHERE r.client_id=$1 AND (r.owner_agent_id=$2 OR $4::boolean)
- AND (($4::boolean AND r.scenario IN ('onboarding','team_leader')) OR (NOT $4::boolean AND r.scenario IN ('buyer','seller','commercial','company_file','custom')))
+ AND (($4::boolean AND r.scenario IN ('onboarding','team_leader','offboarding')) OR (NOT $4::boolean AND r.scenario IN ('buyer','seller','commercial','company_file','custom')))
  AND (r.title ILIKE $3 OR r.business->>'customer' ILIKE $3 OR r.business->>'property' ILIKE $3 OR EXISTS (
   SELECT 1 FROM signing.request_parts p CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.projection->'files','[]'::jsonb)) file
   WHERE p.request_id=r.id AND file->>'title' ILIKE $3
