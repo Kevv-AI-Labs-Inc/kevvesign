@@ -14,7 +14,7 @@ const manifestSchema = z.object({
         packageKey: key,
         version: z.number().int().positive().max(2147483647),
         title: z.string().min(1),
-        scenario: z.enum(['onboarding', 'team_leader']),
+        scenario: z.enum(['onboarding', 'team_leader', 'offboarding']),
         companyKey: key,
         selectors: z.record(key, z.string()),
         file: z.object({
@@ -27,7 +27,7 @@ const manifestSchema = z.object({
           .array(
             z.object({
               key,
-              actor: z.enum(['owner', 'company']),
+              actor: z.enum(['owner', 'company', 'customer']),
               mergeKey: key.optional(),
               required: z.boolean(),
               label: z.string(),
@@ -54,7 +54,7 @@ type State = Record<
   { hash: string; started: boolean; templateId?: string; packageId?: string }
 >;
 function nativeFieldFor(document: NativeEnvelope, field: ImportPackage['fields'][number]) {
-  const expectedOrder = field.actor === 'owner' ? 1 : 2;
+  const expectedOrder = field.actor !== 'company' ? 1 : 2;
   const matches = document.fields.filter(
     (candidate) =>
       candidate.fieldMeta?.label === field.label &&
@@ -170,16 +170,18 @@ async function main() {
               type: 'TEMPLATE',
               visibility: 'ADMIN',
               externalId,
-              recipients: ['owner', 'company'].map((actor, index) => ({
-                name: actor === 'owner' ? 'Agent' : 'Company Broker',
-                email:
-                  actor === 'owner'
-                    ? 'template-recipient@example.invalid'
-                    : connection.native_email,
-                role: 'SIGNER',
-                signingOrder: index + 1,
-                fields: input.fields.filter((f) => f.actor === actor).map((f) => f.native),
-              })),
+              recipients: [input.scenario === 'offboarding' ? 'customer' : 'owner', 'company'].map(
+                (actor, index) => ({
+                  name: actor !== 'company' ? 'Agent' : 'Company Broker',
+                  email:
+                    actor !== 'company'
+                      ? 'template-recipient@example.invalid'
+                      : connection.native_email,
+                  role: 'SIGNER',
+                  signingOrder: index + 1,
+                  fields: input.fields.filter((f) => f.actor === actor).map((f) => f.native),
+                }),
+              ),
               meta: {
                 signingOrder: 'SEQUENTIAL',
                 distributionMethod: 'EMAIL',
@@ -228,7 +230,12 @@ async function main() {
               templateId: native.id,
               roles: native.recipients.map((r) => ({
                 key: r.signingOrder === 1 ? 'agent' : 'company',
-                actor: r.signingOrder === 1 ? 'owner' : 'company',
+                actor:
+                  r.signingOrder === 1
+                    ? input.scenario === 'offboarding'
+                      ? 'customer'
+                      : 'owner'
+                    : 'company',
                 templateRecipientId: r.id,
                 label: r.signingOrder === 1 ? 'Agent' : 'Company Broker',
               })),

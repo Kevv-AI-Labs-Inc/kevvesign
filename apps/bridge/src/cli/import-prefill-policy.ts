@@ -1,6 +1,6 @@
 type ImportField = {
   key: string;
-  actor: 'owner' | 'company';
+  actor: 'owner' | 'company' | 'customer';
   mergeKey?: string;
   required: boolean;
   native: { type: string; fieldMeta: Record<string, unknown> };

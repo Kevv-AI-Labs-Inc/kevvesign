@@ -12,7 +12,11 @@ const principal: Principal = {
   portalOrigin: 'https://portal.example.invalid',
 };
 
-function fixture(projection: { status: string } | null, nativeStatus = 'DRAFT') {
+function fixture(
+  projection: { status: string } | null,
+  nativeStatus = 'DRAFT',
+  scenario = 'buyer',
+) {
   const part = {
     id: 'part-qa',
     provider_id: 'native-qa',
@@ -31,7 +35,7 @@ function fixture(projection: { status: string } | null, nativeStatus = 'DRAFT') 
   Object.assign(service, {
     request: vi.fn(async () => ({
       id: 'request-qa',
-      scenario: 'buyer',
+      scenario,
       request_hash: 'prepared-qa',
       input_snapshot: { companyKey: 'qa' },
     })),
@@ -66,4 +70,27 @@ describe('standard draft review at the native send boundary', () => {
       expect(distribute).not.toHaveBeenCalled();
     });
   }
+});
+
+describe('offboarding stays administrator-controlled', () => {
+  it('refuses ordinary Agents even when they created the historical request', async () => {
+    const { service, distribute, syncPart } = fixture(null, 'DRAFT', 'offboarding');
+    await expect(service.command(principal, 'request-qa', 'send')).rejects.toMatchObject({
+      code: 'ADMIN_REQUIRED',
+      status: 403,
+    });
+    await expect(service.review(principal, 'request-qa')).rejects.toMatchObject({
+      code: 'ADMIN_REQUIRED',
+      status: 403,
+    });
+    expect(syncPart).not.toHaveBeenCalled();
+    expect(distribute).not.toHaveBeenCalled();
+  });
+  it('requires a fresh PDF review before an administrator sends termination paperwork', async () => {
+    const { service, distribute } = fixture(null, 'DRAFT', 'offboarding');
+    await expect(
+      service.command({ ...principal, admin: true }, 'request-qa', 'send'),
+    ).rejects.toMatchObject({ code: 'REVIEW_REQUIRED', status: 409 });
+    expect(distribute).not.toHaveBeenCalled();
+  });
 });

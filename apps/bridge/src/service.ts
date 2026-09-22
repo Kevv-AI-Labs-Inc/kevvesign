@@ -244,9 +244,12 @@ export class SigningService {
     );
     return items.filter(
       (item) =>
-        !isCompanyPackage(item.scenario) ||
-        principal.admin ||
-        packageCompanyKeys(item).some((company) => principal.allowedCompanyKeys?.includes(company)),
+        (item.scenario !== 'offboarding' || principal.admin) &&
+        (!isCompanyPackage(item.scenario) ||
+          principal.admin ||
+          packageCompanyKeys(item).some((company) =>
+            principal.allowedCompanyKeys?.includes(company),
+          )),
     );
   }
   async packageFile(principal: Principal, id: string, partIndex: number, fileIndex: number) {
@@ -485,6 +488,19 @@ export class SigningService {
           ))
       )
         throw new BridgeError('INVALID_HR_RECIPIENT_ROLES', 400);
+      if (
+        input.scenario === 'offboarding' &&
+        (input.parts.length !== 1 ||
+          part.roles.length !== 2 ||
+          !part.roles.some((r) => r.actor === 'customer' && r.key === 'agent') ||
+          !part.roles.some((r) => r.actor === 'company' && r.key === 'company') ||
+          part.roles.some(
+            (r) =>
+              r.optional ||
+              document.recipients.find((v) => v.id === r.templateRecipientId)?.role !== 'SIGNER',
+          ))
+      )
+        throw new BridgeError('INVALID_HR_RECIPIENT_ROLES', 400);
       definition.push({
         ...part,
         prefill: part.prefill.map((prefill) => {
@@ -687,7 +703,8 @@ export class SigningService {
     // Customer recipients stay on the native completion/download page, which
     // does not require an agent's Portal session.
     const redirectUrl =
-      isCompanyPackage(input.scenario) && input.scenario !== 'company_file'
+      (isCompanyPackage(input.scenario) && input.scenario !== 'company_file') ||
+      input.scenario === 'offboarding'
         ? null
         : `${principal.portalOrigin}${input.scenario === 'onboarding' ? '/pending' : input.scenario === 'team_leader' ? '/team-workspace' : `/signing/${requestId}`}`;
     if (input.scenario === 'custom') {
@@ -1079,7 +1096,7 @@ export class SigningService {
       await tx.query('DELETE FROM signing.request_uploads WHERE part_id=$1', [part.id]);
       if (canonical(oldProjection) !== canonical(projection)) {
         await tx.query(
-          "INSERT INTO signing.portal_outbox(id,request_id,client_id,owner_agent_id,scenario) SELECT $1,id,client_id,owner_agent_id,scenario FROM signing.requests WHERE id=$2 AND scenario IN ('onboarding','team_leader')",
+          "INSERT INTO signing.portal_outbox(id,request_id,client_id,owner_agent_id,scenario) SELECT $1,id,client_id,owner_agent_id,scenario FROM signing.requests WHERE id=$2 AND scenario IN ('onboarding','team_leader','offboarding')",
           [randomUUID(), part.request_id],
         );
         await tx.query('UPDATE signing.requests SET updated_at=NOW() WHERE id=$1', [
@@ -1232,7 +1249,8 @@ export class SigningService {
     const request = await this.request(principal, id);
     if (isCompanyPackage(request.scenario))
       assertCompanyAccess(principal, request.input_snapshot.companyKey);
-    const hr = ['onboarding', 'team_leader'].includes(request.scenario);
+    const hr = ['onboarding', 'team_leader', 'offboarding'].includes(request.scenario);
+    if (request.scenario === 'offboarding') this.admin(principal);
     if (
       hr &&
       !principal.admin &&
@@ -1277,7 +1295,10 @@ export class SigningService {
           if (document.status !== 'DRAFT') throw new BridgeError('DOCUMENT_CANNOT_BE_SENT', 409);
           // A failed first sync can leave the cached projection null or stale.
           // Gate the actual native draft, never the cached status, before sending.
-          if (isCompanyPackage(request.scenario) && reviewHash !== this.reviewHash(request, parts))
+          if (
+            (isCompanyPackage(request.scenario) || request.scenario === 'offboarding') &&
+            reviewHash !== this.reviewHash(request, parts)
+          )
             throw new BridgeError('REVIEW_REQUIRED', 409);
           if (part.delivery_state !== 'idle') throw new BridgeError('SEND_OUTCOME_UNKNOWN', 409);
           if (hr || isCompanyPackage(request.scenario)) {
@@ -1291,7 +1312,10 @@ export class SigningService {
                 ? published.definition.flatMap((p) => p.files)
                 : published?.definition[part.part_index]?.files;
             if (published) await this.assertPackageComponents(principal, published);
-            if (isCompanyPackage(request.scenario) && published?.retired_at)
+            if (
+              (isCompanyPackage(request.scenario) || request.scenario === 'offboarding') &&
+              published?.retired_at
+            )
               throw new BridgeError('PACKAGE_RETIRED', 409);
             if (!expectedFiles || expectedFiles.length !== document.envelopeItems.length)
               throw new BridgeError('HR_DRAFT_CHANGED', 409);
@@ -1471,7 +1495,8 @@ export class SigningService {
   }
   async review(principal: Principal, id: string) {
     const request = await this.request(principal, id);
-    if (!isCompanyPackage(request.scenario))
+    if (request.scenario === 'offboarding') this.admin(principal);
+    if (!isCompanyPackage(request.scenario) && request.scenario !== 'offboarding')
       throw new BridgeError('STANDARD_PACKAGE_REQUIRED', 400);
     assertCompanyAccess(principal, request.input_snapshot.companyKey);
     return this.readLease(id, async () => {

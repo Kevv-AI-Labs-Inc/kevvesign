@@ -9,7 +9,8 @@ export function packageCompanyKeys(
 
 export const isCompanyPackage = (scenario: string) =>
   ['buyer', 'seller', 'commercial', 'company_file'].includes(scenario);
-export const isHr = (scenario: string) => scenario === 'onboarding' || scenario === 'team_leader';
+export const isHr = (scenario: string) =>
+  ['onboarding', 'team_leader', 'offboarding'].includes(scenario);
 
 export function assertCompanyAccess(principal: Principal, companyKey: string) {
   if (!principal.admin && !principal.allowedCompanyKeys?.includes(companyKey))
@@ -21,6 +22,7 @@ export function assertNewSigningScenario(
   scenario: string,
   companyKey: string,
 ) {
+  if (scenario === 'offboarding' && !principal.admin) throw new BridgeError('ADMIN_REQUIRED', 403);
   if (scenario === 'custom') throw new BridgeError('PERSONAL_SIGNING_UNAVAILABLE', 403);
   if (isCompanyPackage(scenario)) assertCompanyAccess(principal, companyKey);
 }
