@@ -11,6 +11,7 @@ Documenso is the sole signing engine for the new integration. `apps/bridge` prov
 - [Production setup and cutover](docs/DEPLOYMENT.md)
 - [Signing operations](docs/SIGNING_OPERATIONS.md)
 - [Release and retirement evidence](docs/qa/2026-09-12-documenso-integration.md)
+- [Personal self-service signing (separate instance; rollout gates)](docs/PERSONAL_SIGNING.md)
 
 ## Development
 
