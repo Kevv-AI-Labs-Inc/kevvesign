@@ -1,6 +1,7 @@
 # Portal self-service signing (personal instance only)
 
-Status: release preparation; deployment evidence is recorded separately below.
+Status: initial Portal/native deployment live on 2026-09-23; final real-user
+Google login and signing acceptance are deferred at the owner's request.
 The owner approved the modified 2.11.0 image, reuse of Kevv's Google OAuth client,
 and retirement of legacy test-account access. Company signing is out of scope.
 
@@ -131,6 +132,9 @@ accounts, packages, documents or databases may be deleted by this rollout.
    ID/secret and service token. Keep **all public signup switches
    disabled**. The custom callback is the only narrowly authorized enrollment path.
    Google sign-in must be enabled; password sign-in is disabled.
+   The pinned upstream ignores the password sign-in UI switch, so the personal
+   sign-in route uses a Google-only component. Password/passkey rejection is also
+   enforced server-side; hiding controls is not the authorization boundary.
 9. Validate native health, then enable the Portal entry with
    `PERSONAL_SIGNING_ENABLED=true` for acceptance. Use two consenting test agents
    and a third unauthorized Google account. Before opening broadly, verify upload,

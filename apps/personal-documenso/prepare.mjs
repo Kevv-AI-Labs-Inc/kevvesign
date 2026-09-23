@@ -188,6 +188,12 @@ replace(
 const signin = 'apps/remix/app/routes/_unauthenticated+/signin.tsx';
 replace(
   signin,
+  "import { SignInForm } from '~/components/forms/signin';",
+  "import { PersonalGoogleSignIn } from '~/components/forms/personal-google-signin';",
+);
+replace(signin, '        <SignInForm', '        <PersonalGoogleSignIn');
+replace(
+  signin,
   '        <hr className="-mx-6 my-4" />',
   `        <p className="mt-2 text-sm">
           Homix agents: open Self-service signing in Portal first, then use the same Google account.
