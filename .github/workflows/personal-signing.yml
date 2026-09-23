@@ -1,0 +1,68 @@
+name: personal-signing
+
+on:
+  pull_request:
+    paths:
+      - apps/personal-documenso/**
+      - .github/workflows/personal-signing.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/personal-documenso/**
+      - .github/workflows/personal-signing.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-fixture-only
+          POSTGRES_DB: personal_signing_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NEXT_PRIVATE_DATABASE_URL: postgresql://postgres:disposable-ci-fixture-only@127.0.0.1:5432/personal_signing_test
+      NEXT_PRIVATE_DIRECT_DATABASE_URL: postgresql://postgres:disposable-ci-fixture-only@127.0.0.1:5432/personal_signing_test
+      PERSONAL_DOCUMENSO_SOURCE: ${{ github.workspace }}/native
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: bridge
+      - uses: actions/checkout@v6
+        with:
+          repository: documenso/documenso
+          ref: 191170923a459afa003c846bd8501190a14f52d5
+          path: native
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+      - name: Apply pinned personal-only overlay
+        run: node bridge/apps/personal-documenso/prepare.mjs native
+      - name: Install pinned upstream dependencies
+        working-directory: native
+        run: npx --yes npm@11.11.0 ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare disposable database
+        env:
+          PGPASSWORD: disposable-ci-fixture-only
+        run: psql -h 127.0.0.1 -U postgres -d personal_signing_test -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION pg_trgm; CREATE EXTENSION pgcrypto'
+      - name: Generate native schema and typecheck
+        working-directory: native
+        run: |
+          npx prisma generate --schema packages/prisma/schema.prisma
+          npx prisma db push --schema packages/prisma/schema.prisma --skip-generate
+          npx tsc -p packages/auth/tsconfig.json --noEmit
+      - name: Check real native accounts, teams, sessions and API-token authorization
+        working-directory: native
+        run: node --import tsx ../bridge/apps/personal-documenso/__tests__/native.integration.ts
