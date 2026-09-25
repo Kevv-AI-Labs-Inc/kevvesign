@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { verifyDocumentRoundTrip } from './import-document-check.js';
 import { importContext } from './import-context.js';
 import { assertNativePrefillPolicy } from './import-prefill-policy.js';
 import { canonical, sha256, type NativeEnvelope } from '../documenso.js';
@@ -215,6 +216,12 @@ async function main() {
         (existing.definition.length !== 1 || existing.definition[0].templateId !== native.id)
       )
         throw new Error(`Published version points to another template: ${stateKey}`);
+      if (!existing)
+        await verifyDocumentRoundTrip(
+          provider,
+          `homix-import-preflight:${context.clientId}:${stateKey}`,
+          { name: input.file.name, bytes: files.get(stateKey)! },
+        );
       const published =
         existing ||
         (await context.publish({
