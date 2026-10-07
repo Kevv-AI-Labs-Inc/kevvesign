@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { verifyDocumentRoundTrip } from '../cli/import-document-check.js';
+import { verifyDocumentRoundTrip } from '../native-pdf-check.js';
 import type { Documenso } from '../documenso.js';
 
 function fixture(

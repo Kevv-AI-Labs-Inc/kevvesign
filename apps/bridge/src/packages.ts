@@ -1,5 +1,6 @@
 import { Documenso, templateFingerprint } from './documenso.js';
 import type { NativeEnvelope, NativeField } from './documenso.js';
+import { customerFieldMeta } from './customer-fields.js';
 import {
   BridgeError,
   type CreateInput,
@@ -133,6 +134,7 @@ export function compileTemplate(
   target: Connection,
   redirectUrl: string | null,
 ): PreparedPart {
+  const customerPackage = ['buyer', 'seller', 'commercial'].includes(input.scenario);
   const activeRoles = part.roles.filter(
     (role) => !role.optional || input.recipients.some((recipient) => recipient.key === role.key),
   );
@@ -168,28 +170,36 @@ export function compileTemplate(
       signingOrder: native.signingOrder ?? undefined,
       fields: document.fields
         .filter((f) => f.recipientId === native.id)
-        .map((field) => {
+        .flatMap((field) => {
           const prefill = part.prefill.find((p) => p.templateFieldId === field.id);
           const value = prefill ? input.values[prefill.key] : undefined;
           const identifier = document.envelopeItems.findIndex(
             (item) => item.id === field.envelopeItemId,
           );
           if (identifier < 0) throw new BridgeError('TEMPLATE_ITEM_MISMATCH', 409);
-          return {
-            identifier,
-            type: field.type,
-            page: field.page,
-            positionX: field.positionX,
-            positionY: field.positionY,
-            width: field.width,
-            height: field.height,
-            fieldMeta:
-              value === undefined ? (field.fieldMeta ?? undefined) : prefillMeta(field, value),
-          };
+          const filledMeta =
+            value === undefined ? (field.fieldMeta ?? undefined) : prefillMeta(field, value);
+          const fieldMeta = customerPackage
+            ? customerFieldMeta(field, filledMeta, prefill?.required === false)
+            : filledMeta;
+          if (fieldMeta === null) return [];
+          return [
+            {
+              identifier,
+              type: field.type,
+              page: field.page,
+              positionX: field.positionX,
+              positionY: field.positionY,
+              width: field.width,
+              height: field.height,
+              fieldMeta,
+            },
+          ];
         }),
     };
   });
   const meta = createMeta(document.documentMeta);
+  if (customerPackage) meta.language = 'en';
   delete meta.redirectUrl;
   if (redirectUrl) meta.redirectUrl = redirectUrl;
   return {
@@ -197,7 +207,7 @@ export function compileTemplate(
     bindings,
     connection: target,
     payload: {
-      title: `${input.title} — ${part.title}`,
+      title: customerPackage ? input.title : `${input.title} — ${part.title}`,
       type: 'DOCUMENT',
       visibility: 'ADMIN',
       delegatedDocumentOwner: target.native_email,

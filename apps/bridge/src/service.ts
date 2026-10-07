@@ -1,5 +1,12 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {
+  assertTemplateLayout,
+  assertTemplatePages,
+  templateLayoutSchema,
+  templateRecipients,
+} from './template-layout.js';
+import { verifyDocumentRoundTrip } from './native-pdf-check.js';
 import { zipSync, strToU8 } from 'fflate';
 import { requestListQuery } from './list-query.js';
 import { previewField, safeFilename } from './review.js';
@@ -317,6 +324,24 @@ export class SigningService {
       id: template.id,
       editorUrl: provider.editorUrl(template),
       title: template.title,
+      settings: {
+        language: template.documentMeta?.language,
+        subject: template.documentMeta?.subject,
+        message: template.documentMeta?.message,
+        signingOrder: template.documentMeta?.signingOrder,
+      },
+      layout: template.fields.map((field) => ({
+        id: field.id,
+        recipientId: field.recipientId,
+        itemId: field.envelopeItemId,
+        type: field.type,
+        page: field.page,
+        positionX: field.positionX,
+        positionY: field.positionY,
+        width: field.width,
+        height: field.height,
+        fieldMeta: field.fieldMeta,
+      })),
       files: template.envelopeItems.map((item) => ({
         id: item.id,
         title: item.title,
@@ -347,7 +372,11 @@ export class SigningService {
   ) {
     this.admin(principal);
     const input = z
-      .object({ uploadId: z.uuid(), title: z.string().trim().min(1).max(200) })
+      .object({
+        uploadId: z.uuid(),
+        title: z.string().trim().min(1).max(200),
+        layout: templateLayoutSchema.optional(),
+      })
       .strict()
       .parse(raw);
     const connection = await this.connection(connectionId, principal.clientId);
@@ -364,6 +393,9 @@ export class SigningService {
       files.reduce((n, file) => n + file.bytes.length, 0) > 100 * 1024 * 1024
     )
       throw new BridgeError('INVALID_PDF_UPLOAD', 400);
+    if (input.layout?.recipients.some((r) => r.fields.some((f) => f.identifier >= files.length)))
+      throw new BridgeError('TEMPLATE_ITEM_MISMATCH', 400);
+    if (input.layout) await assertTemplatePages(input.layout, files);
     const hash = sha256(
       canonical({
         input,
@@ -414,8 +446,14 @@ export class SigningService {
               visibility: 'ADMIN',
               delegatedDocumentOwner: connection.native_email,
               externalId,
-              recipients: [],
-              meta: { distributionMethod: 'EMAIL', timezone: 'America/New_York' },
+              recipients: input.layout ? templateRecipients(input.layout) : [],
+              meta: {
+                distributionMethod: 'EMAIL',
+                timezone: 'America/New_York',
+                ...(input.layout
+                  ? { signingOrder: 'SEQUENTIAL', language: 'en', dateFormat: 'yyyy-MM-dd' }
+                  : {}),
+              },
             },
             files,
           );
@@ -441,6 +479,21 @@ export class SigningService {
       assertNativeOwner(document, connection, 'TEMPLATE');
       if (document.type !== 'TEMPLATE' || document.externalId !== externalId || document.deletedAt)
         throw new BridgeError('TEMPLATE_ACCESS_MISMATCH', 409);
+      if (input.layout) {
+        assertTemplateLayout(document, input.layout);
+        if (document.envelopeItems.length !== files.length)
+          throw new BridgeError('TEMPLATE_ITEM_MISMATCH', 409);
+        for (const [index, file] of files.entries()) {
+          if (
+            sha256(
+              await provider.document(document.id, document.envelopeItems[index].id, 'original'),
+            ) !== sha256(file.bytes)
+          )
+            throw new BridgeError('TEMPLATE_PDF_CHANGED', 409);
+          if (row.state !== 'ready')
+            await verifyDocumentRoundTrip(provider, `${externalId}:preflight:${index}`, file);
+        }
+      }
       await this.store.query(
         "UPDATE signing.template_uploads SET state='ready',last_error=NULL,updated_at=NOW() WHERE id=$1",
         [input.uploadId],
