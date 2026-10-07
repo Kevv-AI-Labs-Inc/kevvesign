@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { verifyDocumentRoundTrip } from './import-document-check.js';
+import { verifyDocumentRoundTrip } from '../native-pdf-check.js';
 import { importContext } from './import-context.js';
 import { assertNativePrefillPolicy } from './import-prefill-policy.js';
 import { canonical, sha256, type NativeEnvelope } from '../documenso.js';

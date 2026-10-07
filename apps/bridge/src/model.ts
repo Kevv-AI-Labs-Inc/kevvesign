@@ -206,6 +206,7 @@ export const composeInput = z
     title: z.string().trim().min(1).max(200),
     scenario: z.enum(['buyer', 'seller', 'commercial', 'company_file']),
     companyKey: key,
+    selectors: z.record(key, z.string().max(200)).default({}),
     applicableCompanyKeys: z.array(key).min(1).max(30).optional(),
     documentIds: z.array(z.uuid()).min(1).max(10),
     signingOrder: z.enum(['PARALLEL', 'SEQUENTIAL']).default('PARALLEL'),

@@ -1,4 +1,4 @@
-import { Documenso, sha256 } from '../documenso.js';
+import { Documenso, sha256 } from './documenso.js';
 
 /** A TEMPLATE and a DOCUMENT can normalize the same PDF differently (AcroForm).
  * Check the actual native conversion before publishing. No recipients or mail.

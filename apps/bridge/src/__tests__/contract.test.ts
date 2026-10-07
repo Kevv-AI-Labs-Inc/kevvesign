@@ -8,6 +8,7 @@ import {
 } from '../documenso.js';
 import { authenticate, webhookSecret } from '../auth.js';
 import { recipientIsCurrent } from '../recipient-access.js';
+import { customerFieldMeta } from '../customer-fields.js';
 import { loadBridgeConfig } from '../config.js';
 import { attachmentDisposition, previewField, safeFilename } from '../review.js';
 import {
@@ -127,6 +128,122 @@ const part: TemplatePart = {
 };
 
 describe('native mapping and published packages', () => {
+  function customerDraft(
+    options: {
+      value?: string;
+      text?: string;
+      required?: boolean;
+      readOnly?: boolean;
+      scenario?: 'buyer' | 'seller' | 'commercial' | 'onboarding' | 'company_file';
+      label?: string;
+    } = {},
+  ) {
+    const native = document();
+    native.fields[2].fieldMeta = {
+      type: 'text',
+      readOnly: options.readOnly ?? true,
+      label: options.label ?? 'Listing 第 2 页附加条款 192',
+      placeholder: '内部说明',
+      ...(options.text === undefined ? {} : { text: options.text }),
+    };
+    const published = {
+      ...part,
+      title: '住宅 Listing 文件包 / Residential Listing',
+      prefill: [{ ...part.prefill[0], required: options.required ?? false }],
+      fingerprint: templateFingerprint(native, ['a', 'b']),
+      files: [],
+      connectionId: connection.id,
+    };
+    const input = createInput.parse({
+      idempotencyKey: 'client-label-test',
+      externalReference: 'client-label-test',
+      title: 'Client-selected title',
+      scenario: options.scenario ?? 'seller',
+      companyKey: 'qa',
+      ownerAgentId: 42,
+      packageId: connection.id,
+      recipients: [1, 2].map((id) => ({
+        key: `buyer${id}`,
+        name: `Buyer ${id}`,
+        email: `buyer${id}@example.invalid`,
+      })),
+      values: options.value === undefined ? {} : { address: options.value },
+    });
+    const before = structuredClone(native);
+    const result = compileTemplate(native, [], published, input, connection, null);
+    expect(native).toEqual(before);
+    assertTemplateVersion(native, published, ['a', 'b']);
+    return {
+      result,
+      fields: (
+        result.payload.recipients as Array<{
+          fields: Array<{ type: string; fieldMeta?: Record<string, unknown> }>;
+        }>
+      )[0].fields,
+    };
+  }
+
+  it.each(['buyer', 'seller', 'commercial'] as const)(
+    'shows actual prefilled values, not internal labels, in %s packages',
+    (scenario) => {
+      const { result, fields } = customerDraft({ scenario, value: '张三 / Jane Doe' });
+      expect(fields[1].fieldMeta).toEqual({
+        type: 'text',
+        readOnly: true,
+        text: '张三 / Jane Doe',
+      });
+      expect(result.payload.title).toBe('Client-selected title');
+      expect(result.payload.meta).toHaveProperty('language', 'en');
+      expect(fields[0].type).toBe('SIGNATURE');
+    },
+  );
+  it('uses English signing prompts without rewriting actual names or disclosure answers', () => {
+    for (const [type, label] of [
+      ['SIGNATURE', 'Signature'],
+      ['INITIALS', 'Initials'],
+      ['DATE', 'Date'],
+      ['NAME', 'Full name'],
+      ['EMAIL', 'Email'],
+    ]) {
+      const field = { ...document().fields[0], type };
+      expect(
+        customerFieldMeta(field, { label: '客户签署栏', placeholder: '内部提示' }, false),
+      ).toEqual({ label });
+    }
+    expect(customerFieldMeta(document().fields[0], { label: 'Sign here' }, false)).toEqual({
+      label: 'Sign here',
+    });
+  });
+  it('omits only empty optional read-only inputs and retains approved defaults and zero', () => {
+    expect(customerDraft().fields).toHaveLength(1);
+    expect(customerDraft({ value: '  ' }).fields).toHaveLength(1);
+    expect(customerDraft({ text: 'Approved clause' }).fields[1].fieldMeta?.text).toBe(
+      'Approved clause',
+    );
+    expect(customerDraft({ text: 'Approved clause', value: '' }).fields).toHaveLength(1);
+    expect(customerDraft({ value: '0' }).fields[1].fieldMeta?.text).toBe('0');
+    expect(() => customerDraft({ required: true })).toThrow('MISSING_VALUE:address');
+    expect(() => customerDraft({ required: true, value: ' ' })).toThrow('MISSING_VALUE:address');
+  });
+  it('keeps seller-entered disclosures editable and translates the prompt without filling an answer', () => {
+    const { fields } = customerDraft({
+      readOnly: false,
+      label: 'Lead (a)：已知风险说明；选择 (i) 时填写',
+    });
+    expect(fields).toHaveLength(2);
+    expect(fields[1].fieldMeta?.label).toBe('Lead (a): explain known hazards if (i) is selected');
+    expect(fields[1].fieldMeta?.readOnly).toBe(false);
+    expect(fields[1].fieldMeta?.text).toBeUndefined();
+  });
+  it.each(['onboarding', 'company_file'] as const)(
+    'preserves %s authoring behavior',
+    (scenario) => {
+      const { result, fields } = customerDraft({ scenario });
+      expect(fields).toHaveLength(2);
+      expect(fields[1].fieldMeta?.label).toBe('Listing 第 2 页附加条款 192');
+      expect(result.payload.title).toContain('住宅 Listing 文件包');
+    },
+  );
   it('uses one immutable master for one or two buyers, including optional prefills', () => {
     const native = document();
     native.fields[2].recipientId = 2;
