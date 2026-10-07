@@ -47,6 +47,7 @@
     "prettier": "^3.6.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "zod-native": "npm:zod@3.25.76"
   }
 }
