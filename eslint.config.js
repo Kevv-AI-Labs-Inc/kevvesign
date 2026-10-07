@@ -14,7 +14,10 @@ export default [
     ],
   },
   eslint.configs.recommended,
-  { files: ['apps/personal-documenso/**/*.mjs'], languageOptions: { globals: globals.node } },
+  {
+    files: ['apps/personal-documenso/**/*.mjs', 'apps/company-documenso/**/*.mjs'],
+    languageOptions: { globals: globals.node },
+  },
   {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {

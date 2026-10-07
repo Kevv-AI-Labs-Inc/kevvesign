@@ -7,6 +7,7 @@ import {
   templateRecipients,
 } from './template-layout.js';
 import { verifyDocumentRoundTrip } from './native-pdf-check.js';
+import { routeAgentNotifications } from './notification-routing.js';
 import { zipSync, strToU8 } from 'fflate';
 import { requestListQuery } from './list-query.js';
 import { previewField, safeFilename } from './review.js';
@@ -844,9 +845,13 @@ export class SigningService {
       }
       parts.push(compileTemplate(document, templateFiles, part, input, target, redirectUrl));
     }
-    return packageRow.catalog_kind === 'package'
-      ? [composePreparedParts(parts, input.title, packageRow.signing_order || 'PARALLEL')]
-      : parts;
+    const prepared =
+      packageRow.catalog_kind === 'package'
+        ? [composePreparedParts(parts, input.title, packageRow.signing_order || 'PARALLEL')]
+        : parts;
+    return prepared.map((part) =>
+      routeAgentNotifications(part, input.scenario, principal, requestId),
+    );
   }
   async preview(principal: Principal, raw: unknown) {
     const input = createInput.parse(raw);

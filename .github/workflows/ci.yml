@@ -25,6 +25,15 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test:coverage
+      - name: Verify pinned company notification handlers with fake SMTP
+        run: |
+          COMPANY_SOURCE="$RUNNER_TEMP/company-native-source"
+          git init "$COMPANY_SOURCE"
+          git -C "$COMPANY_SOURCE" remote add origin https://github.com/documenso/documenso.git
+          git -C "$COMPANY_SOURCE" fetch --depth 1 origin 389390c884949fe27c240488a3259da3cdba93e0
+          git -C "$COMPANY_SOURCE" checkout --detach FETCH_HEAD
+          node apps/company-documenso/prepare.mjs "$COMPANY_SOURCE"
+          node apps/company-documenso/verify-handlers.mjs "$COMPANY_SOURCE"
       - run: pnpm build
       - run: pnpm audit --audit-level high
       - uses: actions/upload-artifact@v4
