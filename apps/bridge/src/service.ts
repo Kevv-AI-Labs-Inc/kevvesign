@@ -698,7 +698,7 @@ export class SigningService {
       if (active.rowCount !== input.documentIds.length)
         throw new BridgeError('APPROVED_DOCUMENT_NOT_AVAILABLE', 409);
       await tx.query(
-        "INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by,applicable_company_keys,catalog_kind,components,signing_order) VALUES($1,$2,$3,$4,$5,$6,$7,'{}',$8,$9,$10,'package',$11,$12)",
+        "INSERT INTO signing.packages(id,client_id,package_key,version,title,scenario,company_key,selectors,definition,published_by,applicable_company_keys,catalog_kind,components,signing_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'package',$12,$13)",
         [
           id,
           principal.clientId,
@@ -707,6 +707,7 @@ export class SigningService {
           input.title,
           input.scenario,
           input.companyKey,
+          input.selectors,
           JSON.stringify(definition),
           principal.agentId,
           companies,
