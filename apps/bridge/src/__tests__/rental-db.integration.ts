@@ -9,6 +9,10 @@ const store = new BridgeStore(url, '11'.repeat(32));
 try {
   await store.migrate();
   const run = randomUUID();
+  // Recreate pre-rental constraints on this disposable database only.
+  await store.query(
+    "UPDATE signing.requests SET scenario='buyer' WHERE scenario='rental'; UPDATE signing.packages SET scenario='buyer' WHERE scenario='rental'",
+  );
   await store.query(`ALTER TABLE signing.packages DROP CONSTRAINT packages_scenario_check;
     ALTER TABLE signing.packages ADD CONSTRAINT packages_scenario_check CHECK (scenario IN ('onboarding','team_leader','offboarding','buyer','seller','commercial','company_file'));
     ALTER TABLE signing.requests DROP CONSTRAINT requests_scenario_check;
