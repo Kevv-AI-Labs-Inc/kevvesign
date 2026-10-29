@@ -32,7 +32,7 @@ const part = (): PreparedPart => ({
   },
 });
 describe('business notifications belong to the initiating agent, independently of ownership', () => {
-  for (const scenario of ['buyer', 'seller', 'commercial', 'company_file'])
+  for (const scenario of ['buyer', 'seller', 'rental', 'commercial', 'company_file'])
     it(`routes ${scenario} to the verified owner recipient without changing ownership or invites`, () => {
       const source = part(),
         original = structuredClone(source);

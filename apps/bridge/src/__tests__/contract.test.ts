@@ -134,7 +134,7 @@ describe('native mapping and published packages', () => {
       text?: string;
       required?: boolean;
       readOnly?: boolean;
-      scenario?: 'buyer' | 'seller' | 'commercial' | 'onboarding' | 'company_file';
+      scenario?: 'buyer' | 'seller' | 'rental' | 'commercial' | 'onboarding' | 'company_file';
       label?: string;
     } = {},
   ) {
@@ -183,7 +183,7 @@ describe('native mapping and published packages', () => {
     };
   }
 
-  it.each(['buyer', 'seller', 'commercial'] as const)(
+  it.each(['buyer', 'seller', 'rental', 'commercial'] as const)(
     'shows actual prefilled values, not internal labels, in %s packages',
     (scenario) => {
       const { result, fields } = customerDraft({ scenario, value: '张三 / Jane Doe' });
