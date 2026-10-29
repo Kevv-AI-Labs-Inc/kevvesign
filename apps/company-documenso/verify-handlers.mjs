@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
-import { z } from 'zod-native';
+import { z } from 'zod-native/v3';
 
 if (!process.argv[2]) throw new Error('Pass an explicit prepared upstream source checkout');
 const source = resolve(process.argv[2]);

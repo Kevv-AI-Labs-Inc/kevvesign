@@ -49,6 +49,7 @@
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^4.1.11",
-    "zod-native": "npm:zod@3.25.76"
+    "zod-native": "npm:zod@4.6.6",
+    "vite": "^7.3.7"
   }
 }
