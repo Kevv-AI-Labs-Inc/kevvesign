@@ -45,7 +45,7 @@ const admin: Principal = {
   allowedCompanyKeys: keys,
 };
 const scenario = process.env.SIGNING_QA_SCENARIO || 'buyer';
-assert(['buyer', 'seller', 'commercial'].includes(scenario));
+assert(['buyer', 'seller', 'rental', 'commercial'].includes(scenario));
 const run = randomUUID();
 const proof = await PDFDocument.create();
 const page = proof.addPage([612, 792]);

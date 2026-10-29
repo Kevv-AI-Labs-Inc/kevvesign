@@ -32,6 +32,7 @@ export const createInput = z
       'offboarding',
       'buyer',
       'seller',
+      'rental',
       'commercial',
       'company_file',
       'custom',
@@ -114,6 +115,7 @@ export const publishInput = z
       'offboarding',
       'buyer',
       'seller',
+      'rental',
       'commercial',
       'company_file',
     ]),
@@ -136,7 +138,8 @@ export const publishInput = z
       for (const role of part.roles) {
         if (
           role.optional &&
-          (!['buyer', 'seller', 'commercial'].includes(value.scenario) || role.actor !== 'customer')
+          (!['buyer', 'seller', 'rental', 'commercial'].includes(value.scenario) ||
+            role.actor !== 'customer')
         )
           ctx.addIssue({
             code: 'custom',
@@ -181,7 +184,7 @@ export const publishInput = z
       });
     if (
       (value.applicableCompanyKeys?.length || 0) > 1 &&
-      (!['buyer', 'seller', 'commercial', 'company_file'].includes(value.scenario) ||
+      (!['buyer', 'seller', 'rental', 'commercial', 'company_file'].includes(value.scenario) ||
         roles.some((role) => role.actor === 'company'))
     )
       ctx.addIssue({
@@ -204,7 +207,7 @@ export const composeInput = z
     packageKey: key,
     version: z.number().int().positive().max(2147483647),
     title: z.string().trim().min(1).max(200),
-    scenario: z.enum(['buyer', 'seller', 'commercial', 'company_file']),
+    scenario: z.enum(['buyer', 'seller', 'rental', 'commercial', 'company_file']),
     companyKey: key,
     selectors: z.record(key, z.string().max(200)).default({}),
     applicableCompanyKeys: z.array(key).min(1).max(30).optional(),

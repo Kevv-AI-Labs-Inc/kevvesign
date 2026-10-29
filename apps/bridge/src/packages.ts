@@ -134,7 +134,7 @@ export function compileTemplate(
   target: Connection,
   redirectUrl: string | null,
 ): PreparedPart {
-  const customerPackage = ['buyer', 'seller', 'commercial'].includes(input.scenario);
+  const customerPackage = ['buyer', 'seller', 'rental', 'commercial'].includes(input.scenario);
   const activeRoles = part.roles.filter(
     (role) => !role.optional || input.recipients.some((recipient) => recipient.key === role.key),
   );

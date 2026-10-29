@@ -8,7 +8,7 @@ export function packageCompanyKeys(
 }
 
 export const isCompanyPackage = (scenario: string) =>
-  ['buyer', 'seller', 'commercial', 'company_file'].includes(scenario);
+  ['buyer', 'seller', 'rental', 'commercial', 'company_file'].includes(scenario);
 export const isHr = (scenario: string) =>
   ['onboarding', 'team_leader', 'offboarding'].includes(scenario);
 
